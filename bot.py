@@ -630,4 +630,4 @@ if __name__ == "__main__":
         print("\n" * 3)
         print("############################################################")
         print("#                                                          #")
-        print("#  DIQQAT! TELEGRAM_TOKEN VA CHAT_IDS NI O'ZGARTIRING!    #
+        print("#  DIQQAT! TELEGRAM_TOKEN VA CHAT_IDS NI O'ZGARTIRING!)  #
