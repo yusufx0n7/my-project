@@ -1,10 +1,18 @@
 import asyncio
 import aiohttp
 import time
+import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# TOKEN va CHAT_ID ni qo'lda kiritamiz
+# Logging konfiguratsiyasi
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# TOKEN va CHAT_ID ni qo'lda kiritamiz (o'zgartirilmasdan qoldirildi)
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
 CHAT_IDS = ['7971306481', '6329050233']  # Chat ID lar ro'yxati
 
@@ -13,7 +21,7 @@ MIN_PROFIT = 3
 CHECKABLE_MIN = 1
 CHECKABLE_MAX = 3
 INVEST_AMOUNT = 200
-FEE_RATE = 0.002
+FEE_RATE = 0.002 # Komissiya hisobi
 
 # Ruxsat etilgan birjalar
 ALLOWED_EXCHANGES = {  'SuperEx', 'CoinEx', 'Kraken', 'HTX', 'Toobit', 'AscendEX', 'Bitget',
@@ -37,7 +45,7 @@ COIN_IDS = [
     "Sei", "Bonfida", "Phoenix", "Ethereum Classic", "Gifto", "Celer Network",
     "Hive", "Horizen", "iExec RLC", "Powerledger", "Quant", "Crypterium", "DigiByte",
     "FIO Protocol", "Oasis Network", "DIA", "Ethereum Name Service",
-    "Rootstock Infrastructure Framework", "Optimism", "TRON", "GMT", "Moonriver",
+    "Rootstock Infrastructure Rif", "Optimism", "TRON", "GMT", "Moonriver",
     "Measurable Data Token", "NFPrompt", "Klaytn", "Mina", "Filecoin", "Dogecoin",
     "Trust Wallet Token", "SuperRare", "Moonbeam", "VeChain", "Contentos", "Qtum",
     "MultiversX", "Pyth Network", "Conflux", "MANTRA", "SKALE", "Xai", "Portal",
@@ -176,55 +184,112 @@ COIN_IDS = [
     "Sabai Protocol", "JuChain", "Pundi AI", "Infinity Ground", "Validity", "B3 (Base)"
 ]
 
-async def send_telegram_message(text):
-    """Telegramga xabar yuborish"""
-    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-    
-    for chat_id in CHAT_IDS:
-        payload = {'chat_id': chat_id, 'text': text}
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(url, json=payload)
-        except Exception as e:
-            print(f"Xabar yuborishda xato: {str(e)}")
+# Global aiohttp sessionini saqlash uchun o'zgaruvchi
+global_http_session: aiohttp.ClientSession = None
 
-async def fetch_tickers(session, coin_id):
-    """CoinGecko API dan ticker ma'lumotlarini olish"""
+async def send_telegram_message(text: str):
+    """Telegramga xabar yuborish"""
+    if not global_http_session:
+        logger.error("Aiohttp session hali yaratilmagan!")
+        return
+
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+
+    for chat_id in CHAT_IDS:
+        payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'} # HTML parse_mode qo'shildi
+        try:
+            async with global_http_session.post(url, json=payload, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Telegramga xabar yuborishda xato. Status: {resp.status}, Javob: {await resp.text()}")
+        except asyncio.TimeoutError:
+            logger.error(f"Telegramga xabar yuborishda timeout ({chat_id}).")
+        except aiohttp.ClientError as e:
+            logger.error(f"Telegramga xabar yuborishda tarmoq xatosi ({chat_id}): {e}")
+        except Exception as e:
+            logger.error(f"Telegramga xabar yuborishda kutilmagan xato ({chat_id}): {e}")
+
+async def fetch_markets_data(session: aiohttp.ClientSession, coin_ids_batch: list[str]) -> list[dict]:
+    """
+    CoinGecko API dan 'coins/markets' endpointi orqali ma'lumotlarni olish.
+    Bir so'rovda 100 tagacha koin.
+    """
+    ids_str = ",".join(coin_ids_batch)
+    url = f'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={ids_str}'
     try:
-        url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/tickers'
-        async with session.get(url) as resp:
+        async with session.get(url, timeout=15) as resp:
             if resp.status == 200:
                 return await resp.json()
-            return {"tickers": []}
+            elif resp.status == 429: # Too Many Requests
+                logger.warning(f"CoinGecko API limitiga yetildi (markets endpoint). Kutilmoqda...")
+                retry_after = int(resp.headers.get('Retry-After', '60'))
+                await asyncio.sleep(retry_after + 5)
+                return await fetch_markets_data(session, coin_ids_batch) # Qayta urinish
+            else:
+                logger.warning(f"Markets API so'rovida xato ({ids_str}). Status: {resp.status}, Javob: {await resp.text()}")
+                return []
+    except asyncio.TimeoutError:
+        logger.error(f"Markets API so'rovida timeout ({ids_str}).")
+        return []
+    except aiohttp.ClientError as e:
+        logger.error(f"Markets API so'rovida tarmoq xatosi ({ids_str}): {e}")
+        return []
     except Exception as e:
-        print(f"API so'rovida xato ({coin_id}): {str(e)}")
+        logger.error(f"Markets API so'rovida kutilmagan xato ({ids_str}): {e}")
+        return []
+
+async def fetch_tickers_data(session: aiohttp.ClientSession, coin_id: str) -> dict:
+    """
+    CoinGecko API dan 'coins/{id}/tickers' endpointi orqali ma'lumotlarni olish.
+    Arbitraj tahlili uchun zarur.
+    """
+    url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/tickers'
+    try:
+        async with session.get(url, timeout=10) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            elif resp.status == 429:
+                logger.warning(f"CoinGecko API limitiga yetildi (tickers endpoint - {coin_id}). Kutilmoqda...")
+                retry_after = int(resp.headers.get('Retry-After', '60'))
+                await asyncio.sleep(retry_after + 5)
+                return await fetch_tickers_data(session, coin_id) # Qayta urinish
+            else:
+                logger.warning(f"Tickers API so'rovida xato ({coin_id}). Status: {resp.status}, Javob: {await resp.text()}")
+                return {"tickers": []}
+    except asyncio.TimeoutError:
+        logger.error(f"Tickers API so'rovida timeout ({coin_id}).")
+        return {"tickers": []}
+    except aiohttp.ClientError as e:
+        logger.error(f"Tickers API so'rovida tarmoq xatosi ({coin_id}): {e}")
+        return {"tickers": []}
+    except Exception as e:
+        logger.error(f"Tickers API so'rovida kutilmagan xato ({coin_id}): {e}")
         return {"tickers": []}
 
-async def analyze_coin(session, coin_id, check_mode=False):
-    """Coin uchun arbitraj imkoniyatini tahlil qilish"""
+async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id: str, check_mode: bool = False):
+    """
+    Berilgan koin uchun arbitraj imkoniyatini tahlil qilish.
+    Bu funksiya individual koin uchun 'tickers' endpointidan foydalanadi.
+    """
     try:
-        data = await fetch_tickers(session, coin_id)
+        data = await fetch_tickers_data(session, coin_id)
         tickers = data.get("tickers", [])
-        
-        # Filtrlash
+
         filtered = [
-            t for t in tickers 
-            if t.get("market", {}).get("name") in ALLOWED_EXCHANGES 
+            t for t in tickers
+            if t.get("market", {}).get("name") in ALLOWED_EXCHANGES
             and t.get("target") == "USDT"
+            and t.get("last") is not None and t.get("last") > 0
         ]
 
         if len(filtered) < 2:
             return
 
-        # Narx bo'yicha saralash
-        sorted_by_price = sorted(filtered, key=lambda x: x["last"])
-        buy = sorted_by_price[0]
-        sell = sorted_by_price[-1]
+        buy = min(filtered, key=lambda x: x["last"])
+        sell = max(filtered, key=lambda x: x["last"])
 
         buy_price = buy["last"]
         sell_price = sell["last"]
-        
-        # Hajmni hisoblash
+
         buy_volume = buy.get("converted_volume", {}).get("usd", 0)
         sell_volume = sell.get("converted_volume", {}).get("usd", 0)
         volume = min(buy_volume, sell_volume)
@@ -232,99 +297,151 @@ async def analyze_coin(session, coin_id, check_mode=False):
         if volume < MIN_VOLUME:
             return
 
-        # Foyda hisoblari
         quantity = INVEST_AMOUNT / buy_price
         gross = quantity * sell_price
         fee = quantity * (buy_price + sell_price) * FEE_RATE
         net = gross - INVEST_AMOUNT - fee
         roi = (net / INVEST_AMOUNT) * 100
 
-        # Xabarlarni yuborish
         if roi >= MIN_PROFIT and not check_mode:
             message = (
-                f"🚨 Arbitraj Imkoniyati\n"
-                f"Coin: {coin_id}\n"
-                f"Hajm: {volume:.0f} USDT\n"
-                f"Buy: {buy_price:.4f} ({buy['market']['name']})\n"
-                f"Sell: {sell_price:.4f} ({sell['market']['name']})\n"
-                f"Komissiya: {fee:.2f} USD\n"
-                f"Foyda: {net:.2f} USD\n"
-                f"ROI: {roi:.2f}%"
+                f"<b>🚨 Arbitraj Imkoniyati</b>\n"
+                f"<b>Coin:</b> {coin_id}\n"
+                f"<b>Hajm:</b> {volume:.0f} USDT\n"
+                f"<b>Buy:</b> {buy_price:.4f} ({buy['market']['name']})\n"
+                f"<b>Sell:</b> {sell_price:.4f} ({sell['market']['name']})\n"
+                f"<b>Komissiya:</b> {fee:.2f} USD\n"
+                f"<b>Foyda:</b> {net:.2f} USD\n"
+                f"<b>ROI:</b> {roi:.2f}%"
             )
             await send_telegram_message(message)
+            logger.info(f"Arbitraj imkoniyati topildi va xabar yuborildi: {coin_id}, ROI: {roi:.2f}%")
 
         elif check_mode and CHECKABLE_MIN <= roi < CHECKABLE_MAX:
             message = (
-                f"ℹ️ Tekshiruv: {coin_id}\n"
-                f"Buy: {buy_price:.4f} ({buy['market']['name']})\n"
-                f"Sell: {sell_price:.4f} ({sell['market']['name']})\n"
-                f"ROI: {roi:.2f}%"
+                f"<b>ℹ️ Tekshiruv:</b> {coin_id}\n"
+                f"<b>Buy:</b> {buy_price:.4f} ({buy['market']['name']})\n"
+                f"<b>Sell:</b> {sell_price:.4f} ({sell['market']['name']})\n"
+                f"<b>ROI:</b> {roi:.2f}%"
             )
             await send_telegram_message(message)
-            
+            logger.info(f"Tekshiruv xabari yuborildi: {coin_id}, ROI: {roi:.2f}%")
+
     except Exception as e:
-        error_msg = f"⚠️ Xato ({coin_id}): {str(e)}"
-        print(error_msg)
+        logger.error(f"⚠️ Arbitraj tahlilida kutilmagan xato ({coin_id}): {e}", exc_info=True)
 
 async def monitor_loop():
-    """Asosiy monitorlash tsikli"""
+    """Asosiy monitoring tsikli - 'coins/markets' orqali umumiy ma'lumotlarni olish
+    va keyin arbitraj imkoniyatini tekshirish.
+    """
+    batch_size = 100 # Bir so'rovda maksimal 100 ta koin
     while True:
-        try:
-            print(f"🔍 Coinlarni skanerlash boshlandi ({time.strftime('%Y-%m-%d %H:%M:%S')})")
-            async with aiohttp.ClientSession() as session:
-                for coin_id in COIN_IDS:
-                    await analyze_coin(session, coin_id)
-                    await asyncio.sleep(1.5)  # API chekloviga rioya qilish
-            print(f"✅ Skanerlash tugadi. Keyingi aylanishga tayyorlanmoqda...")
-            await asyncio.sleep(300)  # 5 daqiqa kutish
-        except Exception as e:
-            print(f"❌ Monitoringda katta xato: {str(e)}")
-            await send_telegram_message(f"🆘 Botda katta xato yuz berdi: {str(e)}")
-            print("♻️ 30 soniyadan keyin qayta urinilmoqda...")
-            await asyncio.sleep(30)
+        start_time = time.time()
+        logger.info(f"🔍 Coinlarni skanerlash boshlandi ({time.strftime('%Y-%m-%d %H:%M:%S')})")
+
+        # Koin ID'larini partiyalarga bo'lish
+        coin_id_batches = [COIN_IDS[i:i + batch_size] for i in range(0, len(COIN_IDS), batch_size)]
+
+        all_market_data = []
+        for batch in coin_id_batches:
+            market_data = await fetch_markets_data(global_http_session, batch)
+            all_market_data.extend(market_data)
+            # API cheklovlariga rioya qilish uchun har bir partiyadan keyin ozroq kutish
+            # CoinGecko'ning 'markets' endpointi uchun 100 so'rov/minut limiti bor (Premiumda ko'proq).
+            # Shuning uchun har partiyadan keyin 0.6 soniya kutish 100 ta so'rovni 60 soniyada bajarishga imkon beradi.
+            await asyncio.sleep(0.6)
+
+        logger.info(f"📊 {len(all_market_data)} ta koinning umumiy bozor ma'lumotlari olindi. Arbitraj tekshiruvi boshlanmoqda...")
+
+        # Arbitraj tahlilini parallel bajarish (har bir koin uchun alohida 'tickers' so'rovi)
+        # Buni ham partiyalarga bo'lib, API limitiga yetmaslik uchun ehtiyot bo'lish kerak.
+        # Bu qism avvalgi botdan farqli o'laroq, endi faqat aniq arbitrajni tekshiradi.
+        arbitrage_tasks = []
+        for coin_id in COIN_IDS:
+            arbitrage_tasks.append(analyze_arbitrage_opportunity(global_http_session, coin_id))
+
+        # Har 100 ta arbitraj tekshiruvidan keyin kutish (agar kerak bo'lsa)
+        # Bu yerda API limitiga yetmaslik uchun ehtiyot bo'lish kerak.
+        # CoinGecko'ning 'tickers' endpointi uchun limit pastroq bo'lishi mumkin.
+        # Agar 1000 ta koin bo'lsa, 100 tadan keyin kutish mantig'i:
+        for i in range(0, len(arbitrage_tasks), batch_size):
+            batch_tasks = arbitrage_tasks[i:i + batch_size]
+            await asyncio.gather(*batch_tasks)
+            if i + batch_size < len(arbitrage_tasks): # Oxirgi partiyadan keyin kutmaslik
+                await asyncio.sleep(3) # Har 100 ta koin tekshiruvidan keyin kutish (moslashtiring)
+
+
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.info(f"✅ Skanerlash va Arbitraj tekshiruvi tugadi. Davomiyligi: {duration:.2f} soniya.")
+        
+        # Qolgan vaqtni kutish (agar monitoring tez tugasa)
+        remaining_time = 300 - duration # Jami 5 daqiqa (300 soniya)
+        if remaining_time > 0:
+            logger.info(f"⏳ Keyingi aylanishgacha {remaining_time:.0f} soniya kutish...")
+            await asyncio.sleep(remaining_time)
+        else:
+            logger.warning(f"Monitoring aylanishi kutilganidan uzoqroq davom etdi ({duration:.2f}s). Keyingi aylanish darhol boshlanadi.")
+
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/start komandasi"""
+    await update.message.reply_html("👋 Assalomu alaykum, Arbitraj Botiga xush kelibsiz!\n\nBot 24/7 rejimida ishlaydi va har 5 daqiqada arbitraj imkoniyatlarini tekshiradi.\n\n/check - Hozirgi arbitraj holatini tekshirish.")
+    logger.info(f"'{update.effective_user.full_name}' (/start) buyrug'ini ishlatdi.")
+
+async def check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/check komandasi"""
+    await update.message.reply_text("🔍 Tekshiruv boshlandi...")
+    logger.info(f"'{update.effective_user.full_name}' (/check) buyrug'ini ishlatdi.")
+
+    arbitrage_tasks = []
+    batch_size = 100 # Cheklovni hisobga olish
+    for i in range(0, len(COIN_IDS), batch_size):
+        batch = COIN_IDS[i:i + batch_size]
+        for coin_id in batch:
+            arbitrage_tasks.append(analyze_arbitrage_opportunity(global_http_session, coin_id, check_mode=True))
+        
+        await asyncio.gather(*arbitrage_tasks[i:i + batch_size])
+        if i + batch_size < len(COIN_IDS):
+            await asyncio.sleep(3) # Har 100 ta koin tekshiruvidan keyin kutish
+
+    await update.message.reply_text("✅ Tekshiruv yakunlandi!")
+    logger.info("Tekshiruv yakunlandi.")
 
 async def start_bot():
     """Botni ishga tushirish"""
+    global global_http_session
+    global_http_session = aiohttp.ClientSession()
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    # Command handlerlar
+
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("check", check_handler))
-    
-    # Botni ishga tushirish
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    
-    # Monitoring loopini ishga tushirish
+    logger.info("Telegram bot ishga tushirildi.")
+
     asyncio.create_task(monitor_loop())
-    
-    # Botni ishlashda saqlash
-    await asyncio.Event().wait()
 
-# /start komandasi
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Assalomu alaykum, Arbitraj Botiga xush kelibsiz!\n\nBot 24/7 rejimida ishlaydi va har 5 daqiqada coinlarni tekshiradi.\n\n/check - Hozir tekshirish")
-
-# /check komandasi
-async def check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Tekshiruv boshlandi...")
-    async with aiohttp.ClientSession() as session:
-        for coin_id in COIN_IDS:
-            await analyze_coin(session, coin_id, check_mode=True)
-            await asyncio.sleep(1.5)
-    await update.message.reply_text("✅ Tekshiruv yakunlandi!")
+    try:
+        await asyncio.Event().wait()
+    finally:
+        if global_http_session:
+            await global_http_session.close()
+            logger.info("Aiohttp session yopildi.")
 
 async def main():
     """Asosiy funksiya: botni qayta-qayta ishga tushiradi"""
     while True:
         try:
-            print(f"\n🚀 Bot ishga tushirilmoqda ({time.strftime('%Y-%m-%d %H:%M:%S')})")
+            logger.info(f"\n🚀 Bot ishga tushirilmoqda ({time.strftime('%Y-%m-%d %H:%M:%S')})")
             await start_bot()
         except Exception as e:
-            print(f"❌ Botda katta xato yuz berdi: {str(e)}")
-            await send_telegram_message(f"🆘 Bot to'xtatildi! Xato: {str(e)}")
-            print("♻️ 30 soniyadan keyin qayta ishga tushirilmoqda...")
+            logger.critical(f"❌ Botda halokatli xato yuz berdi va to'xtatildi: {e}", exc_info=True)
+            await send_telegram_message(f"🆘 Bot to'xtatildi! Halokatli xato: {e}")
+            logger.info("♻️ 30 soniyadan keyin qayta ishga tushirilmoqda...")
             await asyncio.sleep(30)
 
 if __name__ == "__main__":
@@ -335,11 +452,16 @@ if __name__ == "__main__":
     #                                              #
     ################################################
     """)
-    print(f"🤖 Bot tokeni: {TELEGRAM_TOKEN}")
-    print(f"👥 Xabar yuboriladigan chatlar: {', '.join(CHAT_IDS)}")
-    print(f"📋 Kuzatiladigan coinlar soni: {len(COIN_IDS)}")
-    print(f"🔄 Har 5 daqiqada avtomatik tekshiruv")
-    print(f"⏰ Boshlanish vaqti: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Botni ishga tushirish va xabarlarni yuborish
-    asyncio.run(main())
+    logger.info(f"🤖 Bot tokeni: {'*' * (len(TELEGRAM_TOKEN) - 5)}{TELEGRAM_TOKEN[-5:]}")
+    logger.info(f"👥 Xabar yuboriladigan chatlar: {', '.join(CHAT_IDS)}")
+    logger.info(f"📋 Kuzatiladigan coinlar soni: {len(COIN_IDS)}")
+    logger.info(f"🔄 Har 5 daqiqada avtomatik tekshiruv")
+    logger.info(f"⏰ Boshlanish vaqti: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot o'chirildi (KeyboardInterrupt).")
+    except Exception as e:
+        logger.critical(f"Asyncio main loopda kutilmagan xato: {e}", exc_info=True)
+
