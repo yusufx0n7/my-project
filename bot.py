@@ -342,4 +342,4 @@ if __name__ == "__main__":
     print(f"⏰ Boshlanish vaqti: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Botni ishga tushirish va xabarlarni yuborish
-    asyncio.run(main()
+    asyncio.run(main())
