@@ -1,4 +1,4 @@
- asyncio
+import asyncio
 import aiohttp
 import time
 from telegram import Update
