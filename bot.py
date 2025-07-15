@@ -364,7 +364,7 @@ async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id:
         logger.info(f"Tekshiruv xabari yuborildi: {coin_id} ({coin_symbol}), ROI: {roi:.2f}%")
 
     except Exception as e:
-        logger.error(f"⚠️ Arbitraj tahlilida kutilmagan xato ({coin_id}): {e}", exc_info=True)
+        logger.error(f"⚠️ Arbitraj tahlilida kutilmagan xato ({coin_id}): {e}" exc_info=True)
 
 
 async def get_or_load_coin_list(session: aiohttp.ClientSession):
