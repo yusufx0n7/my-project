@@ -15,7 +15,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # TOKEN va CHAT_ID (Bularni o'zingizning token va chat IDlaringiz bilan almashtiring)
-TELEGRAM_TOKEN = ''7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'' # Bot tokeningizni shu yerga qo'ying
+TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU' # Bot tokeningizni shu yerga qo'ying
 CHAT_IDS = ['7971306481', '6329050233']  # Chat ID lar ro'yxati (o'zingiznikini qo'ying)
 
 MIN_VOLUME = 10000
