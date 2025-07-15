@@ -1,2 +1,1 @@
-pip install aiohttp
-pip install python-telegram-bot --upgrade
+pip install aiohttp python-telegram-bot
