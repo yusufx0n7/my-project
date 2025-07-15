@@ -29,15 +29,29 @@ CHECKABLE_MIN = 1
 CHECKABLE_MAX = 3
 INVEST_AMOUNT = 200
 
+# Koinlarni bo'lish kerak bo'lgan jami bo'limlar soni
+TOTAL_BATCHES = 3 # Koinlarni 3 ta bo'limga ajratish
+
+# Monitoring tsiklining davomiyligi (10 daqiqa = 600 soniya)
+TOTAL_CYCLE_DURATION_SECONDS = 600 # Barcha koinlar tekshiruvi uchun umumiy vaqt
+
+# Har bir bo'limga ajratilgan taxminiy vaqt (3.3 daqiqa = 198 soniya)
+TIME_PER_BATCH_SECONDS = 198 # 3.3 daqiqa * 60 soniya/daqiqadan
+
+# CoinGecko bepul API uchun taxminiy minimal so'rovlar oralig'i (daqiqada 50-100 so'rov degan taxmin bilan)
+COINGECKO_REQUEST_LIMIT_PER_MINUTE = 50 # CoinGecko bepul versiyasi uchun taxminiy limit
+COINGECKO_DELAY_PER_REQUEST = 60 / COINGECKO_REQUEST_LIMIT_PER_MINUTE # 1.2 soniya/so'rov
+
 # Birjalarni guruhlash
 API_DIRECT_EXCHANGES = {
-    'Binance', 'Kraken', 'CoinEx', 'AscendEX', 'HTX', 'Bitget',
+    'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget',
     'Poloniex', 'BitMart', 'Bitrue', 'BingX', 'MEXC', 'DigiFinex'
 }
 
 COINGECKO_ONLY_EXCHANGES = {
     'SuperEx', 'CoinCola', 'Ourbit', 'Toobit', 'BloFin', 'BDFI',
-    'BYDFi', 'CoinW', 'BTCC', 'WEEX', 'LBank', 'GMGN', 'KCEX'
+    'BYDFi', 'CoinW', 'BTCC', 'WEEX', 'LBank', 'GMGN', 'KCEX',
+    'Kraken' # Kraken endi CoinGecko orqali olinadi
 }
 
 # Barcha birjalar ro'yxati (yangi tizimga mos ravishda)
@@ -85,16 +99,6 @@ COIN_BATCHES = []        # Koinlarning bo'limlarga bo'lingan ro'yxati
 current_batch_index = 0  # Hozirgi tekshirilayotgan bo'lim indeksi
 
 COINS_LIST_FILE = 'coingecko_coins_list.json' # Koinlar ro'yxati saqlanadigan fayl
-
-# Monitoring tsiklining davomiyligi (3 daqiqa = 180 soniya)
-TOTAL_CYCLE_DURATION_SECONDS = 180
-
-# Koinlarni bo'lish kerak bo'lgan jami bo'limlar soni
-TOTAL_BATCHES = 5 # 3 dan 5 ga o'zgartirildi, CoinGecko limitiga kamroq tushish uchun
-
-# CoinGecko bepul API uchun taxminiy minimal so'rovlar oralig'i (daqiqada 50-100 so'rov degan taxmin bilan)
-COINGECKO_REQUEST_LIMIT_PER_MINUTE = 50 # CoinGecko bepul versiyasi uchun taxminiy limit
-COINGECKO_DELAY_PER_REQUEST = 60 / COINGECKO_REQUEST_LIMIT_PER_MINUTE # 1.2 soniya/so'rov
 
 # --- Yordamchi funksiyalar ---
 async def send_telegram_message(text: str):
@@ -166,7 +170,8 @@ async def fetch_coingecko_tickers_data(session: aiohttp.ClientSession, coin_id: 
 
 # --- Yangi: Har bir API ochiq birja uchun ma'lumot olish funksiyalari ---
 # BU YERDAGI FUNKSIYALARNI HAR BIR BIRJA UCHUN TO'LIQ YOZIB CHIQISHINGIZ KERAK!
-# Faqat Binance va Kraken namuna sifatida qoldirildi.
+# Faqat Binance namuna sifatida qoldirildi.
+# Kraken endi CoinGecko orqali olinadi.
 
 async def fetch_binance_tickers(session: aiohttp.ClientSession, coin_symbol: str) -> list:
     """Binance API'dan ma'lumot olish"""
@@ -197,53 +202,8 @@ async def fetch_binance_tickers(session: aiohttp.ClientSession, coin_symbol: str
         logger.error(f"Binance API chaqiruvida kutilmagan xato ({pair}): {e}", exc_info=True)
     return []
 
-async def fetch_kraken_tickers(session: aiohttp.ClientSession, coin_symbol: str) -> list:
-    """Kraken API'dan ma'lumot olish"""
-    # Kraken juftlik nomlari biroz boshqacha bo'lishi mumkin, masalan, XBTUSDT
-    # Odatda ko'p API'lar BTC -> XBT, ETH -> ETH
-    # Bu yerda oddiygina misol uchun coin_symbolni ishlatamiz.
-    # Haqiqiy integratsiyada, agar koin simvoli mos kelmasa, almashtirish (mapping) kerak bo'ladi.
-    kraken_symbol_map = {
-        "BTC": "XBT",
-        "ETH": "ETH", # va h.k.
-    }
-    kraken_coin_symbol = kraken_symbol_map.get(coin_symbol, coin_symbol) # Agar mapda bo'lmasa, o'zinikini ishlatadi
-    pair = f"{kraken_coin_symbol}USDT" # Yoki 'XBTUSDT' for BTC, 'ETHUSDT' for ETH
-    url = f"https://api.kraken.com/0/public/Ticker?pair={pair}"
-    try:
-        async with session.get(url, timeout=5) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data and "result" in data and len(data["result"]) > 0:
-                    first_pair_key = list(data["result"].keys())[0] # Birinchi juftlikni olamiz
-                    ticker_data = data["result"][first_pair_key]
-                    
-                    if "c" in ticker_data and ticker_data["c"] and "v" in ticker_data and ticker_data["v"]:
-                        last_price = float(ticker_data["c"][0]) # oxirgi savdo narxi
-                        volume = float(ticker_data["v"][1]) # bugungi savdo hajmi (quote currency, ya'ni USDT hajmi)
-                        
-                        # Kraken API'sida savdo hajmi asosan bazaviy koin uchun beriladi (masalan, BTC).
-                        # USDT dagi hajmni hisoblash uchun narxga ko'paytiramiz.
-                        converted_volume_usd = last_price * volume
-                        
-                        return [{
-                            "market": {"name": "Kraken"},
-                            "target": "USDT",
-                            "last": last_price,
-                            "volume": volume, # Koin hajmi
-                            "converted_volume": {"usd": converted_volume_usd} # USD hajmi
-                        }]
-                elif "error" in data and any("pair not found" in err for err in data["error"]):
-                    logger.debug(f"Kraken API: {pair} juftligi topilmadi. Javob: {data['error']}")
-                else:
-                    logger.warning(f"Kraken API javobida kerakli kalitlar topilmadi ({pair}). Javob: {data}")
-            else:
-                logger.warning(f"Kraken API xatosi ({pair}). Status: {resp.status}, Javob: {await resp.text()}")
-    except Exception as e:
-        logger.error(f"Kraken API chaqiruvida kutilmagan xato ({pair}): {e}", exc_info=True)
-    return []
-
-# QOLGAN 10 TA API OCHIQ BIRJA UCHUN XUDDI SHUNDAY FUNKSIYALARNI YOZISH KERAK:
+# fetch_kraken_tickers funksiyasi olib tashlandi.
+# QOLGAN API OCHIQ BIRJA UCHUN XUDDI SHUNDAY FUNKSIYALARNI YOZISH KERAK:
 # fetch_coinex_tickers, fetch_ascendex_tickers, fetch_htx_tickers, fetch_bitget_tickers,
 # fetch_poloniex_tickers, fetch_bitmart_tickers, fetch_bitrue_tickers, fetch_bingx_tickers,
 # fetch_mexc_tickers, fetch_digifinex_tickers
@@ -276,16 +236,14 @@ async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id:
     
     if "Binance" in API_DIRECT_EXCHANGES:
         direct_api_tasks.append(fetch_binance_tickers(session, coin_symbol))
-    if "Kraken" in API_DIRECT_EXCHANGES:
-        direct_api_tasks.append(fetch_kraken_tickers(session, coin_symbol))
-    # BU YERGA QOLGAN API_DIRECT_EXCHANGES BIRJALARI UCHUN CHAQLIRUVLARNI QO'SHING:
     # if "CoinEx" in API_DIRECT_EXCHANGES:
     #     direct_api_tasks.append(fetch_coinex_tickers(session, coin_symbol))
     # ... va hokazo
 
-    direct_api_results = await asyncio.gather(*direct_api_tasks)
-    for result_list in direct_api_results:
-        all_tickers.extend(result_list)
+    if direct_api_tasks: # Agar tasklar mavjud bo'lsa
+        direct_api_results = await asyncio.gather(*direct_api_tasks)
+        for result_list in direct_api_results:
+            all_tickers.extend(result_list)
 
 
     # 2. CoinGecko orqali ma'lumot olish (COINGECKO_ONLY_EXCHANGES)
@@ -313,8 +271,8 @@ async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id:
         return
 
     # Eng arzon sotib olish va eng qimmat sotish narxini topish
-    buy = min(filtered_tickers, key=lambda x: x["last"]) # Corrected: use filtered_tickers
-    sell = max(filtered_tickers, key=lambda x: x["last"]) # Corrected: use filtered_tickers
+    buy = min(filtered_tickers, key=lambda x: x["last"])
+    sell = max(filtered_tickers, key=lambda x: x["last"])
 
     buy_price = buy["last"]
     sell_price = sell["last"]
@@ -371,11 +329,11 @@ async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id:
             f"⬆️ **Sotish:** {sell_price:.4f} @ **{sell['market']['name']}**\n"
             f"🚀 **ROI (Daromad):** {roi:.2f}%"
         )
-        try: # Moved try-except block to correctly enclose the send_telegram_message call
+        try:
             await send_telegram_message(message)
             logger.info(f"Tekshiruv xabari yuborildi: {coin_id} ({coin_symbol}), ROI: {roi:.2f}%")
         except Exception as e:
-            logger.error(f"⚠️ Arbitraj tahlilida kutilmagan xato ({coin_id}): {e}", exc_info=True) # Added comma after e
+            logger.error(f"⚠️ Arbitraj tahlilida kutilmagan xato ({coin_id}): {e}", exc_info=True)
 
 
 async def get_or_load_coin_list(session: aiohttp.ClientSession):
@@ -419,10 +377,6 @@ async def init_coin_ids():
         # Simvol bo'yicha xaritalash
         if coin_entry.get('symbol'):
             symbol_lower = coin_entry['symbol'].lower()
-            # Katta hajmli birjalarda (BTC, ETH) bir xil simvolga ega bo'lgan bir nechta koin bo'lishi mumkin.
-            # Bu yerda birinchi topilganini saqlaymiz, lekin aniqroq bo'lish uchun ko'proq tekshirish kerak bo'lishi mumkin.
-            # Hozircha, agar birinchi marta simvol orqali xaritalanayotgan bo'lsa, uni saqlaymiz.
-            # Agar allaqachon xaritalangan bo'lsa, mavjud ID bilan bir xil ekanligini tekshiramiz.
             if symbol_lower not in coin_info_map or coin_info_map[symbol_lower]['id'] != coin_entry['id']:
                 coin_info_map[symbol_lower] = {
                     'id': coin_entry['id'],
@@ -435,7 +389,7 @@ async def init_coin_ids():
         coin_data = coin_info_map.get(name_or_symbol.lower())
         if coin_data:
             coin_id = coin_data['id']
-            if coin_id not in EFFECTIVE_COIN_IDS: # Duplikatlarni oldini olish
+            if coin_id not in EFFECTIVE_COIN_IDS:
                 EFFECTIVE_COIN_IDS.append(coin_id)
                 found_count += 1
         else:
@@ -468,8 +422,6 @@ def get_coin_batches(all_coin_ids: list, num_batches: int) -> list[list]:
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
 
-    # total_coins / effective_num_batches bo'lishi kerak, shunda kamida 1 ta bo'lim bo'ladi.
-    # Agar koinlar soni bo'limlar sonidan kam bo'lsa, bo'limlar sonini koinlar soniga tenglashtiramiz.
     effective_num_batches = min(num_batches, total_coins)
     
     batch_size = math.ceil(total_coins / effective_num_batches)
@@ -480,127 +432,6 @@ def get_coin_batches(all_coin_ids: list, num_batches: int) -> list[list]:
     batches = list(chunk_list(all_coin_ids, batch_size))
     return batches
 
-async def monitor_loop():
-    """
-    Asosiy monitoring tsikli - koinlarni bo'linmalarga bo'lib, aylanma tartibda tekshirish.
-    """
-    global EFFECTIVE_COIN_IDS, current_batch_index, COIN_BATCHES
-
-    while not EFFECTIVE_COIN_IDS:
-        logger.info("Koinlar ro'yxati yuklanishini kutilmoqda... ⏳")
-        await asyncio.sleep(5)
-        if not EFFECTIVE_COIN_IDS: # Uzoq kutib turmasligi uchun, qayta tekshirish
-            await init_coin_ids()
-
-    if not COIN_BATCHES:
-        logger.error("Koin bo'limlari yaratilmadi. Tekshiruvni boshlash mumkin emas. ⛔")
-        return
-
-    while True:
-        start_scan_time = time.time()
-        logger.info(f"🔍 Coinlarni skanerlash boshlandi ({time.strftime('%Y-%m-%d %H:%M:%S')})")
-
-        if not COIN_BATCHES: # Agar COIN_BATCHES bo'sh bo'lib qolsa, xatoga yo'l qo'ymaslik uchun
-            logger.error("COIN_BATCHES bo'sh. Monitoring to'xtatildi. ⛔")
-            await asyncio.sleep(60) # Bir daqiqa kutib, qayta urinish
-            continue
-
-        if current_batch_index >= len(COIN_BATCHES):
-            current_batch_index = 0
-
-        current_batch_ids = COIN_BATCHES[current_batch_index]
-
-        tasks = []
-        for coin_id in current_batch_ids:
-            tasks.append(analyze_arbitrage_opportunity(global_http_session, coin_id))
-
-        if tasks:
-            await asyncio.gather(*tasks)
-            
-            # API limitini boshqarish. Bu soddalashtirilgan, lekin yordam beradi.
-            elapsed_time_for_batch_processing = time.time() - start_scan_time
-            # Agar tezroq tugagan bo'lsa, CoinGecko limitini hurmat qilish uchun kutish
-            if elapsed_time_for_batch_processing < COINGECKO_DELAY_PER_REQUEST * len(current_batch_ids):
-                wait_time = (COINGECKO_DELAY_PER_REQUEST * len(current_batch_ids)) - elapsed_time_for_batch_processing
-                logger.debug(f"CoinGecko API limiti uchun {wait_time:.2f} soniya kutish.")
-                await asyncio.sleep(wait_time)
-
-
-        end_scan_time = time.time()
-        scan_duration = end_scan_time - start_scan_time
-        logger.info(f"✅ Bu bo'limdagi {len(current_batch_ids)} ta koin tekshirildi. Davomiyligi: {scan_duration:.2f} soniya. ")
-
-        current_batch_index += 1
-
-        if current_batch_index == len(COIN_BATCHES):
-            # Butun tsikl tugagandan keyin to'liq kutish
-            # start_scan_time bu har bir partiya uchun yangilanadi, shuning uchun butun tsikl vaqtini to'g'ri hisoblash uchun
-            # birinchi partiyaning boshlanish vaqti kerak bo'ladi. Hozirgi holatda bu hisoblash biroz chalkash.
-            # Keling, butun tsikl tugaganligini anglatuvchi signalni o'rnatamiz va oxirgi partiyadan keyin to'liq kutamiz.
-            # Barcha partiyalar tekshirilgandan keyin butun tsikl uchun qancha vaqt qolganini hisoblashning soddalashtirilgan usuli.
-
-            # Bu yerda monitoring tsiklining davomiyligini qanday boshqarishni aniqlashtirish kerak.
-            # Agar har bir partiya o'z navbatida COINGECKO_DELAY_PER_REQUEST * len(current_batch_ids) kutish bilan ishlasa,
-            # butun tsikl avtomatik ravishda sekinlashadi.
-            # Agar butun tsikl TOTAL_CYCLE_DURATION_SECONDS ga teng bo'lishi kerak bo'lsa,
-            # barcha partiyalar tekshirilgandan keyin umumiy kutish kerak.
-
-            # Hozirgi implementatsiya har bir batchdan keyin qisqa kutishni va butun tsikl tugagandan keyin katta kutishni birlashtiradi.
-            # Bu mantiqan to'g'ri bo'lishi uchun quyidagicha o'zgartirish kiritamiz:
-            # Tsikl boshida timestamp olamiz va barcha partiyalar o'tgandan keyin qolgan vaqtni kutamiz.
-
-            # Bu qismni yanada aniqroq boshqarish uchun o'zgaruvchi qo'shishimiz mumkin.
-            # Misol uchun, loop boshida `cycle_start_time` ni o'rnatish va uni butun tsikl davomida ishlatish.
-            pass # Bu joyni o'zgartiramiz, quyidagi butun tsikl yakunida.
-
-        # Har bir partiya tekshirilgandan keyin qisqa pauza (API cheklovlari uchun)
-        # Agar bu yuqorida (asyncio.gather() dan keyin) qilingan bo'lsa, bu yerda takrorlash shart emas.
-        # Lekin agar siz CoinGecko API so'rovlari oralig'ida aniq bir vaqtni ta'minlamoqchi bo'lsangiz,
-        # va fetch_coingecko_tickers_data ichidagi `await asyncio.sleep(retry_after + 1)` yetarli bo'lmasa,
-        # bu yerda qisqa `await asyncio.sleep(1)` qo'yishingiz mumkin.
-        # Hozirgi holatda, yuqoridagi COINGECKO_DELAY_PER_REQUEST ga asoslangan kutish yetarli bo'lishi kerak.
-
-
-    # Butun tsikl yakunlanganda (barcha partiyalar tekshirilgach)
-    # Bu blok `while True` ichida to'g'ri joylashtirilishi kerak.
-    # Bu butun tsikl tugaganini va keyingi tsikl boshlanishidan oldin umumiy kutishni ta'minlaydi.
-    # Yuqoridagi `if current_batch_index == len(COIN_BATCHES):` blokini tashqariga chiqaramiz.
-
-        if current_batch_index == len(COIN_BATCHES): # Barcha bo'limlar tekshirildi
-            # Tsiklning umumiy davomiyligini hisoblash
-            current_cycle_duration = time.time() - start_scan_time # start_scan_time har bir partiya uchun yangilanadi, shuning uchun bu xato
-            # Aslida, biz butun while loopining boshidan oxirigacha bo'lgan vaqtni kuzatishimiz kerak.
-            # Keling, bu logikani loopning boshiga ko'chiramiz va uni umumiy tsikl uchun ishlatamiz.
-            
-            # --- YANGI LOGIKA: BUTUN TSIKL UCHUN VAZIFALAR ---
-            # Bir tsikl boshlanishini qayd etish
-            if current_batch_index == 0: # Yangi tsikl boshlanyapti
-                cycle_start_time = time.time()
-
-            # ... partiyalarni qayta ishlash ...
-
-            if current_batch_index == len(COIN_BATCHES): # Barcha partiyalar qayta ishlandi
-                elapsed_cycle_time = time.time() - cycle_start_time
-                remaining_time_for_cycle = TOTAL_CYCLE_DURATION_SECONDS - elapsed_cycle_time
-
-                if remaining_time_for_cycle > 0:
-                    logger.info(f"⏳ To'liq aylanish yakunlanishiga {remaining_time_for_cycle:.0f} soniya qoldi. Kutish...")
-                    await asyncio.sleep(remaining_time_for_cycle)
-                else:
-                    logger.warning(f"Monitoringning to'liq aylanishi kutilganidan uzoqroq davom etdi ({elapsed_cycle_time:.2f}s). Yangi aylanish darhol boshlanadi. ⚡")
-                current_batch_index = 0 # Yangi tsikl boshlanishi uchun indeksni nolga qaytarish
-
-            # Hozirgi kodingizda `start_scan_time` har bir batch uchun yangilanadi.
-            # Shuning uchun bu mantiqni butun tsikl uchun to'g'ri ishlashi uchun o'zgartirish kerak.
-            # Quyida to'g'irlangan versiyasi berilgan.
-            
-            # Bu yerda aslicha `start_scan_time` monitoring_loop boshlanganda bir marta olinishi kerak.
-            # Lekin siz uni har bir batch uchun olgansiz.
-            # Keling, shu blokni o'chirib tashlaymiz va tsiklni boshqarishni yaxshilaymiz.
-            pass # Bu blokni o'chirib tashladim, chunki u ikki marta kutishga sabab bo'lishi mumkin.
-
-
-# Asl `monitor_loop` dagi tsikl boshqaruvini soddalashtirish
 async def monitor_loop():
     """
     Asosiy monitoring tsikli - koinlarni bo'linmalarga bo'lib, aylanma tartibda tekshirish.
@@ -631,26 +462,22 @@ async def monitor_loop():
 
             if tasks:
                 await asyncio.gather(*tasks)
-                
-                # API limitini boshqarish.
-                elapsed_time_for_batch_processing = time.time() - batch_scan_start_time
-                if elapsed_time_for_batch_processing < COINGECKO_DELAY_PER_REQUEST * len(batch_ids):
-                    wait_time = (COINGECKO_DELAY_PER_REQUEST * len(batch_ids)) - elapsed_time_for_batch_processing
-                    logger.debug(f"CoinGecko API limiti uchun {wait_time:.2f} soniya kutish.")
-                    await asyncio.sleep(max(0, wait_time)) # Manfiy qiymat bo'lmasligi uchun max(0, ...)
+            
+            # Har bir bo'lim uchun 3.3 daqiqa (198 soniya) sarflashni ta'minlaymiz.
+            elapsed_time_for_batch = time.time() - batch_scan_start_time
+            remaining_time_for_this_batch = TIME_PER_BATCH_SECONDS - elapsed_time_for_batch
+
+            if remaining_time_for_this_batch > 0:
+                logger.debug(f"Bo'lim {batch_index + 1} uchun {remaining_time_for_this_batch:.2f} soniya kutish.")
+                await asyncio.sleep(remaining_time_for_this_batch)
+            else:
+                logger.warning(f"Bo'lim {batch_index + 1} kutilganidan uzoqroq davom etdi ({elapsed_time_for_batch:.2f}s). ⚡")
 
             batch_scan_duration = time.time() - batch_scan_start_time
             logger.info(f"✅ Bu bo'limdagi {len(batch_ids)} ta koin tekshirildi. Davomiyligi: {batch_scan_duration:.2f} soniya. ")
 
-        # Butun tsikl tugagandan keyin umumiy kutish
         elapsed_cycle_time = time.time() - cycle_start_time
-        remaining_time_for_cycle = TOTAL_CYCLE_DURATION_SECONDS - elapsed_cycle_time
-
-        if remaining_time_for_cycle > 0:
-            logger.info(f"⏳ To'liq aylanish yakunlanishiga {remaining_time_for_cycle:.0f} soniya qoldi. Kutish...")
-            await asyncio.sleep(remaining_time_for_cycle)
-        else:
-            logger.warning(f"Monitoringning to'liq aylanishi kutilganidan uzoqroq davom etdi ({elapsed_cycle_time:.2f}s). Yangi aylanish darhol boshlanadi. ⚡")
+        logger.info(f"🚀 To'liq aylanish yakunlandi. Umumiy davomiyligi: {elapsed_cycle_time:.2f} soniya. Yangi tsikl boshlanadi. 🎉")
         current_batch_index = 0 # Keyingi tsikl uchun indeksni nolga qaytarish
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -694,7 +521,7 @@ async def check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if elapsed_time < COINGECKO_DELAY_PER_REQUEST * checked_count:
             wait_time = (COINGECKO_DELAY_PER_REQUEST * checked_count) - elapsed_time
             logger.debug(f"Check buyrug'i uchun CoinGecko API limiti bo'yicha {wait_time:.2f} soniya kutish.")
-            await asyncio.sleep(max(0, wait_time)) # Manfiy qiymat bo'lmasligi uchun max(0, ...)
+            await asyncio.sleep(max(0, wait_time))
 
 
     await update.message.reply_text("✅ Tekshiruv yakunlandi! Natijalar yuqoridagi xabarlarda yuborilgan bo'lishi mumkin. 🎉")
@@ -729,7 +556,7 @@ async def start_bot():
         logger.critical(f"❌ Botning ishga tushishida yoki ishlashi davomida halokatli xato: {e}", exc_info=True)
         raise # Xatoni yuqoriga (main() ga) uzatish
     finally:
-        if global_http_session and not global_http_session.closed: # Agar session ochilgan va hali yopilmagan bo'lsa
+        if global_http_session and not global_http_session.closed:
             await global_http_session.close()
             logger.info("Aiohttp session yopildi. 🔴")
         logger.info("Telegram bot o'chirildi. 🛑")
@@ -742,23 +569,14 @@ async def main():
             logger.info(f"\n🚀 Bot ishga tushirilmoqda ({time.strftime('%Y-%m-%d %H:%M:%S')})")
             await start_bot() # Botni ishga tushirish
         except Exception as e:
-            # send_telegram_message funksiyasi global_http_session yopilgan bo'lishi mumkinligini hisobga oladi
-            # shuning uchun bu yerda xabar yuborishga urinish xavfsiz.
             logger.critical(f"❌ Botda halokatli xato yuz berdi va to'xtatildi: {e}", exc_info=True)
-            # send_telegram_message chaqiruvidan oldin session tekshiruvi bor, shuning uchun bu yerda xavfsiz.
-            # Lekin, agar global_http_session `finally` blokida allaqachon yopilgan bo'lsa, bu yerda xato berishi mumkin.
-            # Shuning uchun, botni qayta ishga tushirishdan oldin yangi session yaratishga harakat qilish muhim.
-            # Yoki faqat exception handling uchun yordamchi funksiya yaratish.
-
-            # Hozirgi holatda send_telegram_message ichida session tekshiruvi bor, shuning uchun bu yerda ham xavfsiz.
-            # Agar session yo'q bo'lsa, u xabar yubormaydi.
             await send_telegram_message(f"🆘 Bot to'xtatildi! Halokatli xato: <code>{e}</code> Iltimos, loglarni tekshiring.")
             logger.info("♻️ 30 soniyadan keyin qayta ishga tushirilmoqda...")
             await asyncio.sleep(30) # 30 soniya kutib, qayta urinish
 
 if __name__ == "__main__":
-    # Konfiguratsiyaning to'g'riligini tekshirish (o'zgartirilgan)
-    if not TELEGRAM_TOKEN or not CHAT_IDS or any(not str(chat_id).strip() for chat_id in CHAT_IDS): # Convert chat_id to string for strip()
+    # Konfiguratsiyaning to'g'riligini tekshirish
+    if not TELEGRAM_TOKEN or not CHAT_IDS or any(not str(chat_id).strip() for chat_id in CHAT_IDS):
         logger.error("❌ Xatolik: TELEGRAM_TOKEN yoki CHAT_IDS konfiguratsiyasi to'g'ri emas. Iltimos, kod ichida ularni o'zgartiring.")
         print("\n" * 3)
         print("############################################################")
@@ -768,3 +586,4 @@ if __name__ == "__main__":
         print("############################################################")
     else:
         asyncio.run(main())
+
