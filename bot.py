@@ -360,6 +360,7 @@ async def analyze_arbitrage_opportunity(session: aiohttp.ClientSession, coin_id:
             f"⬆️ **Sotish:** {sell_price:.4f} @ **{sell['market']['name']}**\n"
             f"🚀 **ROI (Daromad):** {roi:.2f}%"
         )
+try:
         await send_telegram_message(message)
         logger.info(f"Tekshiruv xabari yuborildi: {coin_id} ({coin_symbol}), ROI: {roi:.2f}%")
 
