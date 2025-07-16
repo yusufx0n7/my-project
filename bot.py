@@ -10,8 +10,8 @@ import random
 import logging
 
 # --- Konfiguratsiya ---
-TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN' # O'zingizning haqiqiy Telegram bot tokeningizni kiriting
-TELEGRAM_CHAT_ID = 'YOUR_CHAT_ID'         # O'zingizning haqiqiy Telegram chat ID'ingizni kiriting (raqam yoki string)
+TELEGRAM_TOKEN ='7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU' # O'zingizning haqiqiy Telegram bot tokeningizni kiriting
+TELEGRAM_CHAT_ID = '7971306481', '6329050233'      # O'zingizning haqiqiy Telegram chat ID'ingizni kiriting (raqam yoki string)
 
 EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
