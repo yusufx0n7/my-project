@@ -29,16 +29,12 @@ CHECKABLE_MIN = 1
 CHECKABLE_MAX = 3
 INVEST_AMOUNT = 200
 
-# Koinlarni bo'lish kerak bo'lgan jami bo'limlar soni
-TOTAL_BATCHES = 3 # Koinlarni 3 ta bo'limga ajratish
-
-# Monitoring tsiklining davomiyligi (10 daqiqa = 600 soniya)
-TOTAL_CYCLE_DURATION_SECONDS = 600 # Barcha koinlar tekshiruvi uchun umumiy vaqt
-
-# Har bir bo'limga ajratilgan taxminiy vaqt (3.3 daqiqa = 198 soniya)
-TIME_PER_BATCH_SECONDS = 198 # 3.3 daqiqa * 60 soniya/daqiqadan
+# Yangi konfiguratsiyalar
+COINS_PER_MINUTE = 25 # Bir partiyada tekshiriladigan koinlar soni
+PAUSE_AFTER_BATCH_SECONDS = 60 # Har bir partiyadan keyin kutish vaqti (soniya)
 
 # CoinGecko bepul API uchun taxminiy minimal so'rovlar oralig'i (daqiqada 50-100 so'rov degan taxmin bilan)
+# Endi bu qiymat faqat bitta so'rov uchun minimal kechikishni belgilaydi
 COINGECKO_REQUEST_LIMIT_PER_MINUTE = 50 # CoinGecko bepul versiyasi uchun taxminiy limit
 COINGECKO_DELAY_PER_REQUEST = 60 / COINGECKO_REQUEST_LIMIT_PER_MINUTE # 1.2 soniya/so'rov
 
@@ -59,6 +55,7 @@ ALLOWED_EXCHANGES = API_DIRECT_EXCHANGES.union(COINGECKO_ONLY_EXCHANGES)
 
 
 # Kuzatiladigan koinlar (Nomlari) - Siz bergan ro'yxat
+# Sizning talabingizga binoan INITIAL_COIN_NAMES ro'yxati yangilandi
 INITIAL_COIN_NAMES = [
     "Gitcoin", "Alchemy Pay", "Cardano", "AdEx", "Aergo", "Anchored Coins AEUR",
     "SingularityNET", "Algorand", "MyNeighborAlice", "Amp", "ApeCoin", "Polygon",
@@ -77,28 +74,17 @@ INITIAL_COIN_NAMES = [
     "Measurable Data Token", "NFPrompt", "Klaytn", "Mina", "Filecoin", "Dogecoin",
     "Trust Wallet Token", "SuperRare", "Moonbeam", "VeChain", "Contentos", "Qtum",
     "MultiversX", "Pyth Network", "Conflux", "MANTRA", "SKALE", "Xai", "Portal",
-    "Enjin Coin", "ARPA", "PlayDapp", "Cortex", "Nano", "Prom", "Reserve Rights",
-    "Sui", "IOST", "SelfKey", "Flow", "Manta Network", "Tezos", "Bitcoin Cash",
-    "Aptos", "Bitcoin Gold", "Dash", "Dent", "Lisk", "Firo", "PAX Gold", "eCash",
-    "NEM", "Komodo", "Cosmos", "Solana", "Ocean Protocol", "Mask Network",
-    "REI Network", "Streamr", "Viction", "Waves", "Automata Network", "Cyber",
-    "Radworks", "API3", "Blur", "Gas", "Axelar", "Terra", "Galxe", "Decentraland",
-    "Ardor", "Stacks", "ICON", "Golem", "WazirX", "Decred", "Steem", "Metal DAO",
-    "NULS", "Flux", "Secret", "Biconomy", "COMBO", "Hedera", "Civic", "Request",
-    "DeXe", "Origin Protocol", "MobileCoin", "Highstreet", "AVA (Travala)", "USD Coin",
-    "Arweave", "Chiliz", "Harmony", "Storj", "TrueUSD", "PIVX", "IRISnet",
-    "Basic Attention Token", "Metis", "Celestia", "NKN", "xMoney", "Marlin",
-    "Wormhole", "QuarkChain", "Hooked Protocol", "Saga", "Astar", "Ark", "Tensor"
+    "Enjin Coin", "ARPA", "PlayDapp", "Cortex", "Nano", "Prom"
 ]
 
 # Global o'zgaruvchilar
 global_http_session: aiohttp.ClientSession = None
 coin_info_map = {} # Koin nomlarini ID va simvollarga xaritalash {lower_name: {id: ..., symbol: ...}, lower_symbol: {id: ..., symbol: ...}}
 EFFECTIVE_COIN_IDS = []  # Faqat IDsi topilgan koinlar
-COIN_BATCHES = []        # Koinlarning bo'limlarga bo'lingan ro'yxati
-current_batch_index = 0  # Hozirgi tekshirilayotgan bo'lim indeksi
+# COIN_BATCHES va current_batch_index endi monitor_loop ichida boshqariladi
 
-COINS_LIST_FILE = 'coingecko_coins_list.json' # Koinlar ro'yxati saqlanadigan fayl
+
+COINS_LIST_FILE = 'coingecko_coins_list.json' # Koinlar ro'yxati saqlanadigan fayd
 
 # --- Yordamchi funksiyalar ---
 async def send_telegram_message(text: str):
@@ -365,7 +351,7 @@ async def get_or_load_coin_list(session: aiohttp.ClientSession):
 
 async def init_coin_ids():
     """Bot ishga tushganda koin nomlarini IDlarga va simvollarga tarjima qilish"""
-    global coin_info_map, EFFECTIVE_COIN_IDS, COIN_BATCHES
+    global coin_info_map, EFFECTIVE_COIN_IDS
 
     full_coin_list = await get_or_load_coin_list(global_http_session)
     for coin_entry in full_coin_list:
@@ -399,86 +385,63 @@ async def init_coin_ids():
     if not_found_names:
         logger.warning(f"CoinGecko'da topilmagan koin nomlari/simvollari: {', '.join(not_found_names[:10])}{'...' if len(not_found_names) > 10 else ''} ⚠️")
 
-    if EFFECTIVE_COIN_IDS:
-        COIN_BATCHES = get_coin_batches(EFFECTIVE_COIN_IDS, TOTAL_BATCHES)
-        if not COIN_BATCHES:
-            logger.error("Koin bo'limlari yaratilmadi, EFFECTIVE_COIN_IDS bo'sh bo'lishi mumkin. ⛔")
-        else:
-            logger.info(f"Koinlar {len(COIN_BATCHES)} ta bo'limga bo'lindi. Har bir bo'limda taxminan {len(COIN_BATCHES[0]) if COIN_BATCHES else 0} ta koin bor. ✨")
+    if not EFFECTIVE_COIN_IDS:
+        logger.error("Koin IDlari topilmadi, monitoring boshlanmaydi. ⛔")
 
-
-def get_coin_batches(all_coin_ids: list, num_batches: int) -> list[list]:
-    """
-    Koin IDlarini belgilangan sonli bo'limlarga teng taqsimlaydi.
-    """
-    if not all_coin_ids or num_batches <= 0:
-        return []
-
-    total_coins = len(all_coin_ids)
-    if total_coins == 0:
-        return []
-
-    def chunk_list(lst, n):
-        for i in range(0, len(lst), n):
-            yield lst[i:i + n]
-
-    effective_num_batches = min(num_batches, total_coins)
-    
-    batch_size = math.ceil(total_coins / effective_num_batches)
-    logger.info(f"Har bir bo'limda taxminan {batch_size} ta koin bo'ladi. 📦")
-    if batch_size > COINGECKO_REQUEST_LIMIT_PER_MINUTE:
-        logger.warning(f"Har bir bo'limdagi koinlar soni ({batch_size}) CoinGecko'ning daqiqadagi taxminiy limitidan ({COINGECKO_REQUEST_LIMIT_PER_MINUTE}) oshib ketishi mumkin. Limitga duch kelishi ehtimoli bor. 🚨")
-
-    batches = list(chunk_list(all_coin_ids, batch_size))
-    return batches
 
 async def monitor_loop():
     """
-    Asosiy monitoring tsikli - koinlarni bo'linmalarga bo'lib, aylanma tartibda tekshirish.
+    Asosiy monitoring tsikli - koinlarni kichik partiyalarga bo'lib, har bir partiyadan keyin dam olib tekshirish.
     """
-    global EFFECTIVE_COIN_IDS, current_batch_index, COIN_BATCHES
+    global EFFECTIVE_COIN_IDS
 
     while not EFFECTIVE_COIN_IDS:
         logger.info("Koinlar ro'yxati yuklanishini kutilmoqda... ⏳")
         await asyncio.sleep(5)
         if not EFFECTIVE_COIN_IDS:
-            await init_coin_ids()
+            await init_coin_ids() # Agar hali yuklanmagan bo'lsa, qayta urinish
 
-    if not COIN_BATCHES:
-        logger.error("Koin bo'limlari yaratilmadi. Tekshiruvni boshlash mumkin emas. ⛔")
-        return
+    logger.info(f"Koinlarni {COINS_PER_MINUTE} tadan partiyalarga bo'lib tekshirish boshlandi. Har {PAUSE_AFTER_BATCH_SECONDS} soniyada dam olinadi. ✨")
 
     while True:
-        cycle_start_time = time.time() # Butun tsiklning boshlanish vaqti
+        # Koinlar ro'yxatini aralashtirish, har safar har xil koinlar birinchi bo'lishi uchun
+        # random.shuffle(EFFECTIVE_COIN_IDS) # Bu yerga random import qilish kerak bo'ladi, agar kerak bo'lsa
 
-        for batch_index, batch_ids in enumerate(COIN_BATCHES):
-            current_batch_index = batch_index # Global indeksni yangilash
-            batch_scan_start_time = time.time() # Har bir batch uchun skanerlash boshlanish vaqti
-            logger.info(f"🔍 Coinlarni skanerlash boshlandi (Bo'lim {batch_index + 1}/{len(COIN_BATCHES)}, {time.strftime('%Y-%m-%d %H:%M:%S')})")
+        total_coins = len(EFFECTIVE_COIN_IDS)
+        current_coin_index = 0
+        cycle_start_time = time.time()
 
+        while current_coin_index < total_coins:
+            batch_start_index = current_coin_index
+            batch_end_index = min(current_coin_index + COINS_PER_MINUTE, total_coins)
+            current_batch_ids = EFFECTIVE_COIN_IDS[batch_start_index:batch_end_index]
+
+            if not current_batch_ids:
+                break # Agar bo'sh partiya bo'lsa, tsikldan chiqish
+
+            logger.info(f"🔍 Partiyani skanerlash boshlandi ({batch_start_index + 1}-{batch_end_index}/{total_coins} koin).")
+            
+            batch_scan_start_time = time.time()
             tasks = []
-            for coin_id in batch_ids:
+            for coin_id in current_batch_ids:
                 tasks.append(analyze_arbitrage_opportunity(global_http_session, coin_id))
 
             if tasks:
                 await asyncio.gather(*tasks)
             
-            # Har bir bo'lim uchun 3.3 daqiqa (198 soniya) sarflashni ta'minlaymiz.
             elapsed_time_for_batch = time.time() - batch_scan_start_time
-            remaining_time_for_this_batch = TIME_PER_BATCH_SECONDS - elapsed_time_for_batch
+            logger.info(f"✅ Bu partiyadagi {len(current_batch_ids)} ta koin tekshirildi. Davomiyligi: {elapsed_time_for_batch:.2f} soniya.")
 
-            if remaining_time_for_this_batch > 0:
-                logger.debug(f"Bo'lim {batch_index + 1} uchun {remaining_time_for_this_batch:.2f} soniya kutish.")
-                await asyncio.sleep(remaining_time_for_this_batch)
-            else:
-                logger.warning(f"Bo'lim {batch_index + 1} kutilganidan uzoqroq davom etdi ({elapsed_time_for_batch:.2f}s). ⚡")
+            current_coin_index = batch_end_index
 
-            batch_scan_duration = time.time() - batch_scan_start_time
-            logger.info(f"✅ Bu bo'limdagi {len(batch_ids)} ta koin tekshirildi. Davomiyligi: {batch_scan_duration:.2f} soniya. ")
+            if current_coin_index < total_coins: # Agar oxirgi partiya bo'lmasa, dam olish
+                logger.info(f"😴 {PAUSE_AFTER_BATCH_SECONDS} soniya dam olinmoqda...")
+                await asyncio.sleep(PAUSE_AFTER_BATCH_SECONDS)
 
         elapsed_cycle_time = time.time() - cycle_start_time
         logger.info(f"🚀 To'liq aylanish yakunlandi. Umumiy davomiyligi: {elapsed_cycle_time:.2f} soniya. Yangi tsikl boshlanadi. 🎉")
-        current_batch_index = 0 # Keyingi tsikl uchun indeksni nolga qaytarish
+        # Butun ro'yxatni tekshirib bo'lgandan keyin qayta boshlash uchun hech qanday qo'shimcha kutish shart emas.
+        # monitor_loop() funksiyasi "while True" ichida, shuning uchun u avtomatik ravishda yangi tsiklni boshlaydi.
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start komandasi"""
@@ -586,4 +549,3 @@ if __name__ == "__main__":
         print("############################################################")
     else:
         asyncio.run(main())
-
