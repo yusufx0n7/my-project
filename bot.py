@@ -11,7 +11,7 @@ import logging
 
 # --- Konfiguratsiya ---
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-TELEGRAM_CHAT_IDS = ['7971306481', '6329050233']
+TELEGRAM_CHAT_IDS = ['7971306481']
 
 EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
