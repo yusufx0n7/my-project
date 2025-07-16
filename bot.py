@@ -11,7 +11,7 @@ import logging
 
 # --- Konfiguratsiya ---
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-TELEGRAM_CHAT_IDS = ['7971306481']
+TELEGRAM_CHAT_IDS = ['7971306481', '6329050233']  # Sizning chat ID laringiz
 
 EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
@@ -101,18 +101,43 @@ class ArbitrageBot:
         self.application = None
         self.is_running = True
 
+    async def verify_chat_ids(self):
+        """Chat ID larni tekshirish"""
+        valid_chat_ids = []
+        for chat_id in TELEGRAM_CHAT_IDS:
+            try:
+                await self.bot.send_chat_action(chat_id=chat_id, action="typing")
+                valid_chat_ids.append(chat_id)
+                logger.info(f"Chat ID {chat_id} mavjud va foydalanish mumkin")
+            except Exception as e:
+                logger.error(f"Chat ID {chat_id} da muammo: {str(e)}")
+        return valid_chat_ids
+
     async def send_telegram_message(self, text: str, is_creative: bool = False):
         """Xabarni barcha chat ID larga yuborish"""
-        for chat_id in TELEGRAM_CHAT_IDS:
+        valid_chat_ids = await self.verify_chat_ids()
+        if not valid_chat_ids:
+            logger.error("Hech qanday chat ID ishlamayapti!")
+            return
+
+        for chat_id in valid_chat_ids:
             try:
                 if is_creative:
                     emojis = ['📈', '💰', '🚀', '✨', '🔥', '💎', '🎉', '🤑']
-                    creative_msg = f"{random.choice(emojis)} *CRYPTO ARBITRAGE* {random.choice(emojis)}\n\n{text}"
-                    await self.bot.send_message(chat_id=chat_id, text=creative_msg, parse_mode=ParseMode.MARKDOWN)
+                    creative_msg = f"{random.choice(emojis)} *CRYPTO ARBITRAGE BOT* {random.choice(emojis)}\n\n{text}"
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=creative_msg,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
                 else:
-                    await self.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
             except Exception as e:
-                logger.error(f"Telegram xatosi (chat_id {chat_id}): {e}")
+                logger.error(f"Xabar yuborishda xato (chat_id {chat_id}): {str(e)}")
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start komandasi"""
@@ -127,14 +152,16 @@ class ArbitrageBot:
 📊 *Foydali buyruqlar:*
 /start - Bot haqida ma'lumot
 /check - Kichik arbitrajlarni tekshirish
-/stats - Bot statistikasi
 
 ⏳ Keyingi avtomatik tekshiruv: 3 daqiqadan so'ng
 
 📈 Omad tilaymiz! 💰
         """
-        await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
-        await self.send_telegram_message(f"👤 Yangi foydalanuvchi: {update.effective_user.full_name}")
+        try:
+            await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
+            await self.send_telegram_message(f"👤 Yangi foydalanuvchi: {update.effective_user.full_name}")
+        except Exception as e:
+            logger.error(f"Start command error: {str(e)}")
 
     async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Check komandasi"""
@@ -152,19 +179,24 @@ class ArbitrageBot:
                 else:
                     await update.message.reply_text("ℹ️ Hozircha 1%-3% oralig'ida arbitraj imkoniyatlari topilmadi")
         except Exception as e:
-            logger.error(f"Check command error: {e}")
+            logger.error(f"Check command error: {str(e)}")
             await update.message.reply_text("⚠️ Tekshiruvda xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring.")
+        finally:
+            self.session = None
 
     async def get_all_prices_from_distributed_apis(self) -> Dict[str, Dict[str, float]]:
         """Narxlarni olish"""
         prices = {}
         
-        # Mock data for testing
-        for coin_name in INITIAL_COIN_NAMES_GROUP_1[:20]:  # First 20 coins for testing
+        # Mock data for testing - faqat bir nechta koinlar uchun
+        selected_coins = random.sample(INITIAL_COIN_NAMES_GROUP_1, 20)  # 20 ta tasodifiy koin
+        
+        for coin_name in selected_coins:
             symbol = COIN_MAPPING.get(coin_name, {}).get("symbol", coin_name[:4].upper())
             prices[symbol] = {}
             
-            for exchange in random.sample(list(EXCHANGES), 3):  # 3 random exchanges
+            # Har bir koin uchun 3 ta tasodifiy birjadan narx
+            for exchange in random.sample(list(EXCHANGES), 3):
                 base_price = random.uniform(0.1, 50000)
                 variation = random.uniform(-0.05, 0.05)  # -5% to +5% variation
                 prices[symbol][exchange] = base_price * (1 + variation)
@@ -230,7 +262,7 @@ class ArbitrageBot:
                     logger.info("Hech qanday arbitraj topilmadi")
                     
         except Exception as e:
-            logger.error(f"Avtomatik tekshiruvda xato: {e}")
+            logger.error(f"Avtomatik tekshiruvda xato: {str(e)}")
         finally:
             self.session = None
 
@@ -242,39 +274,53 @@ class ArbitrageBot:
             try:
                 await self.automatic_arbitrage_check()
             except Exception as e:
-                logger.error(f"Scheduler xatosi: {e}")
+                logger.error(f"Scheduler xatosi: {str(e)}")
             
             logger.info(f"Keyingi tekshiruv {CHECK_INTERVAL_SECONDS} soniyadan so'ng...")
             await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
     async def start(self):
         """Botni ishga tushirish"""
-        self.application = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        # Command handlerlar
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("check", self.check_command))
-        
-        # Schedulerni ishga tushirish
-        asyncio.create_task(self.run_scheduler())
-        
-        # Adminlarga xabar
-        await self.send_telegram_message(
-            "🤖 *Arbitraj Boti Ishga Tushdi!*\n"
-            f"⏳ Avtomatik tekshiruv har {CHECK_INTERVAL_SECONDS//60} daqiqada\n"
-            f"📊 Koinlar soni: {len(INITIAL_COIN_NAMES_GROUP_1)}\n"
-            f"🏦 Birjalar soni: {len(EXCHANGES)}"
-        )
-        
-        logger.info("Bot ishga tushmoqda...")
-        await self.application.run_polling()
+        try:
+            # Chat ID larni tekshirish
+            valid_chat_ids = await self.verify_chat_ids()
+            if not valid_chat_ids:
+                logger.error("Hech qanday chat ID ishlamayapti! Bot ishlamaydi.")
+                return
+
+            self.application = Application.builder().token(TELEGRAM_TOKEN).build()
+            
+            # Command handlerlar
+            self.application.add_handler(CommandHandler("start", self.start_command))
+            self.application.add_handler(CommandHandler("check", self.check_command))
+            
+            # Schedulerni ishga tushirish
+            asyncio.create_task(self.run_scheduler())
+            
+            # Adminlarga xabar
+            await self.send_telegram_message(
+                "🤖 *Arbitraj Boti Ishga Tushdi!*\n"
+                f"⏳ Avtomatik tekshiruv har {CHECK_INTERVAL_SECONDS//60} daqiqada\n"
+                f"📊 Koinlar soni: {len(INITIAL_COIN_NAMES_GROUP_1)}\n"
+                f"🏦 Birjalar soni: {len(EXCHANGES)}"
+            )
+            
+            logger.info("Bot ishga tushmoqda...")
+            await self.application.run_polling()
+            
+        except Exception as e:
+            logger.critical(f"Botni ishga tushirishda xato: {str(e)}")
+            await self.stop()
 
     async def stop(self):
         """Botni to'xtatish"""
         self.is_running = False
         if self.session:
             await self.session.close()
-        await self.send_telegram_message("🛑 Bot to'xtatildi")
+        if self.application:
+            await self.application.shutdown()
+            await self.application.stop()
+        logger.info("Bot to'xtatildi")
 
 async def main():
     bot = ArbitrageBot()
@@ -282,8 +328,9 @@ async def main():
         await bot.start()
     except KeyboardInterrupt:
         await bot.stop()
+        logger.info("Bot foydalanuvchi tomonidan to'xtatildi")
     except Exception as e:
-        logger.critical(f"Asosiy xato: {e}")
+        logger.critical(f"Asosiy xato: {str(e)}")
         await bot.stop()
 
 if __name__ == "__main__":
