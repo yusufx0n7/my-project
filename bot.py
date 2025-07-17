@@ -1,4 +1,3 @@
-
 import asyncio
 import aiohttp
 from telegram import Update
@@ -51,7 +50,7 @@ COIN_NAMES = [
     "Chappyz", "Kambria", "Aion", "Acria.AI", "Ctomorrow Platform",
     "The Emerald Company", "Gomining", "EPIK Prime", "Myria", "AutoCrypto",
     "Cindicator", "Bottos", "Eurite", "Bloktopia", "Runesterminal",
-    "RSICвЂўGENESISвЂўRUNE", "WELL3", "Alpine F1 Team", "Verida", "Galaxis",
+    "RSIC•GENESIS•RUNE", "WELL3", "Alpine F1 Team", "Verida", "Galaxis",
     "Energi", "Build", "DecideAI", "5ire", "Slash Vision Labs", "Star Protocol"
 ]
 
@@ -79,7 +78,8 @@ async def fetch_coingecko(session, coin_name):
             if best['converted_volume']['usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coingecko", float(best['converted_last']['usd']), float(best['converted_volume']['usd']))
-    except:
+    except Exception as e:
+        print(f"Error fetching {coin_name} from CoinGecko: {e}")
         return coin_name, None
 
 async def fetch_coinpaprika(session, coin_name):
@@ -95,7 +95,8 @@ async def fetch_coinpaprika(session, coin_name):
             if best['volume_usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coinpaprika", float(best['price']), float(best['volume_usd']))
-    except:
+    except Exception as e:
+        print(f"Error fetching {coin_name} from Coinpaprika: {e}")
         return coin_name, None
 
 async def fetch_coincap(session, coin_name):
@@ -111,7 +112,8 @@ async def fetch_coincap(session, coin_name):
             if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
-    except:
+    except Exception as e:
+        print(f"Error fetching {coin_name} from CoinCap: {e}")
         return coin_name, None
 
 async def gather_prices():
@@ -158,46 +160,47 @@ def detect_arbitrage(prices):
 async def send_alert(ctx, ops):
     for o in ops:
         msg = (
-            f"рџљЂ <b>Arbitrage Alert!</b>
-"
-            f"рџЄ™ {o['coin']}: Buy @ {o['buy']} (${o['bprice']:.4f}), "
-            f"Sell @ {o['sell']} (${o['sprice']:.4f})
-"
-            f"рџ’ё Profit: <b>{o['profit']}%</b>
-"
-            f"вЏ± {datetime.utcnow().strftime('%H:%M:%S UTC')}"
+            f"🚀 <b>Arbitrage Alert!</b>\n"
+            f"🪙 {o['coin']}: Buy @ {o['buy']} (${o['bprice']:.4f}), "
+            f"Sell @ {o['sell']} (${o['sprice']:.4f})\n"
+            f"💸 Profit: <b>{o['profit']}%</b>\n"
+            f"⏱ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
         for admin_id in ADMIN_TELEGRAM_ID:
             await ctx.bot.send_message(chat_id=admin_id, text=msg, parse_mode='HTML')
 
 async def check_arbitrage(context: ContextTypes.DEFAULT_TYPE):
+    print(f"Checking for arbitrage at {datetime.utcnow()}")
     prices = await gather_prices()
     ops = detect_arbitrage(prices)
     if ops:
         await send_alert(context, ops)
+    else:
+        print("No arbitrage opportunities found")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("рџ¤– Arbitrage Bot ishga tushdi! 3 daqiqada bir tekshiraman.")
-        context.job_queue.run_repeating(check_arbitrage, interval=180, first=10)
+        await update.message.reply_text("🤖 Arbitrage Bot started! Checking every 3 minutes.")
+        context.job_queue.run_repeating(check_arbitrage, interval=180, first=5)
     else:
-        await update.message.reply_text("вљ пёЏ Sizga ruxsat yo'q!")
+        await update.message.reply_text("⚠️ You don't have permission to start this bot!")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("вњ… Bot ishlamoqda")
+    await update.message.reply_text("✅ Bot is running and monitoring for arbitrage opportunities")
 
 async def manual_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("рџ”Ќ Qo'lda tekshirish boshlandi...")
+        await update.message.reply_text("🔍 Starting manual check...")
         await check_arbitrage(context)
-        await update.message.reply_text("вњ… Tekshirish tugadi")
+        await update.message.reply_text("✅ Manual check completed")
     else:
-        await update.message.reply_text("вљ пёЏ Sizga ruxsat yo'q!")
+        await update.message.reply_text("⚠️ You don't have permission to run manual checks!")
 
 if __name__ == '__main__':
+    print("Starting bot...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("check", manual_check))
-    print("рџљЂ Bot ishga tushdi!")
+    print("🚀 Bot is ready and running!")
     app.run_polling()
