@@ -1,14 +1,13 @@
+
 import asyncio
 import aiohttp
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, Application
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-ADMIN_TELEGRAM_ID = (7971306481, 6329050233)  # Adminlar ID si
+ADMIN_TELEGRAM_ID = (7971306481, 6329050233)
 
 ALLOWED_EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
@@ -52,7 +51,7 @@ COIN_NAMES = [
     "Chappyz", "Kambria", "Aion", "Acria.AI", "Ctomorrow Platform",
     "The Emerald Company", "Gomining", "EPIK Prime", "Myria", "AutoCrypto",
     "Cindicator", "Bottos", "Eurite", "Bloktopia", "Runesterminal",
-    "RSIC•GENESIS•RUNE", "WELL3", "Alpine F1 Team", "Verida", "Galaxis",
+    "RSICвЂўGENESISвЂўRUNE", "WELL3", "Alpine F1 Team", "Verida", "Galaxis",
     "Energi", "Build", "DecideAI", "5ire", "Slash Vision Labs", "Star Protocol"
 ]
 
@@ -73,14 +72,14 @@ async def fetch_coingecko(session, coin_name):
         url = f"https://api.coingecko.com/api/v3/coins/{_id}/tickers"
         async with session.get(url) as response:
             data = await response.json()
-            prices = [t for t in data.get("tickers", []) if t['market']['name'] in ALLOWED_EXCHANGES]
-            if not prices:
+            tickers = [t for t in data.get("tickers", []) if t['market']['name'] in ALLOWED_EXCHANGES]
+            if not tickers:
                 return coin_name, None
-            best = max(prices, key=lambda x: x['volume'])
+            best = max(tickers, key=lambda x: x['volume'])
             if best['converted_volume']['usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coingecko", float(best['converted_last']['usd']), float(best['converted_volume']['usd']))
-    except Exception as e:
+    except:
         return coin_name, None
 
 async def fetch_coinpaprika(session, coin_name):
@@ -96,7 +95,7 @@ async def fetch_coinpaprika(session, coin_name):
             if best['volume_usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coinpaprika", float(best['price']), float(best['volume_usd']))
-    except Exception as e:
+    except:
         return coin_name, None
 
 async def fetch_coincap(session, coin_name):
@@ -105,20 +104,19 @@ async def fetch_coincap(session, coin_name):
         url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
         async with session.get(url) as response:
             data = await response.json()
-            markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'] in [e.lower() for e in ALLOWED_EXCHANGES]]
+            markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'].lower() in [e.lower() for e in ALLOWED_EXCHANGES]]
             if not markets:
                 return coin_name, None
             best = max(markets, key=lambda x: float(x.get('volumeUsd24Hr') or 0))
             if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
-    except Exception as e:
+    except:
         return coin_name, None
 
 async def gather_prices():
     groups = split_coins()
     prices = {}
-
     async with aiohttp.ClientSession() as s:
         tasks = []
         for src, coins in groups.items():
@@ -128,23 +126,18 @@ async def gather_prices():
                 tasks.extend([fetch_coincap(s, c) for c in coins])
             else:
                 tasks.extend([fetch_coinpaprika(s, c) for c in coins])
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
+        results = await asyncio.gather(*tasks)
         for result in results:
-            if isinstance(result, Exception):
-                continue
             coin, data = result
             if data:
                 src, price, vol = data
                 prices.setdefault(coin.upper(), {})[src] = (price, vol)
-
     return prices
 
 def detect_arbitrage(prices):
     ops = []
     for coin, data in prices.items():
-        valid = {s: p[0] for s, p in data.items()}
+        valid = {s: p for s, (p, v) in data.items()}
         if len(valid) < 2:
             continue
         min_src = min(valid, key=valid.get)
@@ -165,12 +158,14 @@ def detect_arbitrage(prices):
 async def send_alert(ctx, ops):
     for o in ops:
         msg = (
-            f"🚀 <b>Arbitrage Topildi!</b>\n"
-            f"🪙 <b>{o['coin']}</b>\n"
-            f"🟢 Buy: {o['buy']} @ ${o['bprice']:.4f}\n"
-            f"🔴 Sell: {o['sell']} @ ${o['sprice']:.4f}\n"
-            f"💰 Foyda: <b>{o['profit']}%</b>\n"
-            f"⏱ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
+            f"рџљЂ <b>Arbitrage Alert!</b>
+"
+            f"рџЄ™ {o['coin']}: Buy @ {o['buy']} (${o['bprice']:.4f}), "
+            f"Sell @ {o['sell']} (${o['sprice']:.4f})
+"
+            f"рџ’ё Profit: <b>{o['profit']}%</b>
+"
+            f"вЏ± {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
         for admin_id in ADMIN_TELEGRAM_ID:
             await ctx.bot.send_message(chat_id=admin_id, text=msg, parse_mode='HTML')
@@ -181,36 +176,28 @@ async def check_arbitrage(context: ContextTypes.DEFAULT_TYPE):
     if ops:
         await send_alert(context, ops)
 
-# === BOT COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🤖 Bot ishga tushdi! Har 3 daqiqada tekshiraman.")
-        context.job_queue.run_repeating(check_arbitrage, interval=180, first=5)
+        await update.message.reply_text("рџ¤– Arbitrage Bot ishga tushdi! 3 daqiqada bir tekshiraman.")
+        context.job_queue.run_repeating(check_arbitrage, interval=180, first=10)
     else:
-        await update.message.reply_text("⛔ Sizga ruxsat yo‘q!")
+        await update.message.reply_text("вљ пёЏ Sizga ruxsat yo'q!")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot ishlamoqda. Siz millioner bo‘lasiz! 💸")
+    await update.message.reply_text("вњ… Bot ishlamoqda")
 
 async def manual_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🧐 Tekshiruv boshlandi...")
+        await update.message.reply_text("рџ”Ќ Qo'lda tekshirish boshlandi...")
         await check_arbitrage(context)
-        await update.message.reply_text("✅ Tugadi.")
+        await update.message.reply_text("вњ… Tekshirish tugadi")
     else:
-        await update.message.reply_text("⛔ Sizga ruxsat yo‘q!")
+        await update.message.reply_text("вљ пёЏ Sizga ruxsat yo'q!")
 
-# === BOT ISHGA TUSHIRISH ===
 if __name__ == '__main__':
-    async def main():
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("status", status))
-        app.add_handler(CommandHandler("check", manual_check))
-        print("🚀 Bot ishga tushdi!")
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        await app.updater.idle()
-
-    asyncio.run(main())
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("check", manual_check))
+    print("рџљЂ Bot ishga tushdi!")
+    app.run_polling()
