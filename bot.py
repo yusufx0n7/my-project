@@ -1,20 +1,19 @@
-import asyncio, aiohttp
+import asyncio
+import aiohttp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
 from datetime import datetime
 
 # === CONFIG ===
-
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-# ADMIN_TELEGRAM_ID endi to'g'ri tuple sifatida belgilangan.
-ADMIN_TELEGRAM_ID = (7971306481, 6329050233)  # Raqamlarni int qilib kiriting.
+ADMIN_TELEGRAM_ID = (7971306481, 6329050233)  # Adminlar ID si
 
-ALLOWED_EXCHANGES = set([
+ALLOWED_EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
     'Bitrue', 'BingX', 'MEXC', 'DigiFinex', 'SuperEx', 'CoinCola', 'Ourbit',
     'Toobit', 'BloFin', 'BDFI', 'BYDFi', 'CoinW', 'BTCC', 'WEEX', 'LBank',
     'GMGN', 'KCEX', 'Kraken'
-])
+}
 
 COIN_NAMES = [
     "Zeebu", "Fasttoken", "LayerZero", "IPVERSE", "Zignaly", "VeThor Token",
@@ -34,7 +33,7 @@ COIN_NAMES = [
     "Swash", "Lambda", "MATH", "SubQuery Network", "Lithium", "Lossless",
     "Bridge Oracle", "Avail", "Mande Network", "Crypto-AI-Robo.com", "Metahero",
     "Netvrk", "Smart Layer Network", "Effect AI", "Chirpley", "Ispolink",
-    "Edge Matrix Computing", "Dock", "PureFi Protocol", "GNY", "DxChain Token", # Bu yerda vergul qo'shildi
+    "Edge Matrix Computing", "Dock", "PureFi Protocol", "GNY", "DxChain Token",
     "B-cube.ai", "DOJO Protocol", "Propy", "AXIS Token", "LBRY Credits",
     "ClinTex CTi", "GoCrypto Token", "Three Protocol Token", "Idena",
     "Aimedis (new)", "UBIX.Network", "Cirus Foundation", "All In", "Neurashi",
@@ -55,11 +54,11 @@ COIN_NAMES = [
     "Energi", "Build", "DecideAI", "5ire", "Slash Vision Labs", "Star Protocol"
 ]
 
-VOLUME_THRESHOLD = 5000  # USD
+VOLUME_THRESHOLD = 5000  # Minimal hajm USD
 
-# === SPLIT COINS INTO THREE ===
-
+# === FUNKSIYALAR ===
 def split_coins():
+    """Koinlarni 3 ta API uchun bo'lib beradi"""
     n = len(COIN_NAMES)
     c = n // 3
     return {
@@ -68,16 +67,11 @@ def split_coins():
         "coinpaprika": COIN_NAMES[2*c:]
     }
 
-# === FETCH FUNCTIONS ===
-
 async def fetch_coingecko(session, coin_name):
-    # Coingecko ID ba'zan nomidan farq qilishi mumkin. Agar API noto'g'ri ID berayotgan bo'lsa,
-    # bu qismni to'g'irlash kerak bo'ladi. Hozircha mavjud usulni saqlab qolamiz.
-    _id = coin_name.lower().replace(" ", "-").replace(".", "") # Ba'zi nomlarda nuqta bo'lishi mumkin
-    url = f"https://api.coingecko.com/api/v3/coins/{_id}/tickers"
     try:
-        async with session.get(url) as response: # aiohttp session dan to'g'ri foydalanish
-            response.raise_for_status() # HTTP xatolarini tekshirish
+        _id = coin_name.lower().replace(" ", "-").replace(".", "")
+        url = f"https://api.coingecko.com/api/v3/coins/{_id}/tickers"
+        async with session.get(url) as response:
             data = await response.json()
             prices = [t for t in data.get("tickers", []) if t['market']['name'] in ALLOWED_EXCHANGES]
             if not prices:
@@ -86,26 +80,16 @@ async def fetch_coingecko(session, coin_name):
             if best['converted_volume']['usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coingecko", float(best['converted_last']['usd']), float(best['converted_volume']['usd']))
-    except aiohttp.ClientError as e: # aniqroq xatolarni ushlash
+    except Exception as e:
         print(f"Error fetching {coin_name} from CoinGecko: {e}")
         return coin_name, None
-    except Exception as e: # boshqa kutilmagan xatolarni ushlash
-        print(f"Unexpected error with CoinGecko for {coin_name}: {e}")
-        return coin_name, None
-
 
 async def fetch_coinpaprika(session, coin_name):
-    _id = coin_name.lower().replace(" ", "-").replace(".", "") # Ba'zi nomlarda nuqta bo'lishi mumkin
-    url = f"https://api.coinpaprika.com/v1/tickers/{_id}"
     try:
+        _id = coin_name.lower().replace(" ", "-").replace(".", "")
+        url = f"https://api.coinpaprika.com/v1/tickers/{_id}"
         async with session.get(url) as response:
-            response.raise_for_status()
             data = await response.json()
-            # Coinpaprika API ba'zan "error" yoki "message" kalitlarini qaytarishi mumkin.
-            # Agar data "id" kalitini o'z ichiga olmasa, bu coin topilmaganligini anglatadi.
-            if "error" in data or "message" in data or "id" not in data:
-                return coin_name, None
-
             markets = [m for m in data.get("markets", []) if m['exchange_name'] in ALLOWED_EXCHANGES]
             if not markets:
                 return coin_name, None
@@ -113,50 +97,26 @@ async def fetch_coinpaprika(session, coin_name):
             if best['volume_usd'] < VOLUME_THRESHOLD:
                 return coin_name, None
             return coin_name, ("coinpaprika", float(best['price']), float(best['volume_usd']))
-    except aiohttp.ClientError as e:
-        print(f"Error fetching {coin_name} from Coinpaprika: {e}")
-        return coin_name, None
     except Exception as e:
-        print(f"Unexpected error with Coinpaprika for {coin_name}: {e}")
+        print(f"Error fetching {coin_name} from Coinpaprika: {e}")
         return coin_name, None
 
 async def fetch_coincap(session, coin_name):
-    # Coincap API da ba'zi tokenlar uchun to'liq nom emas, balki qisqartma ishlatilishi mumkin.
-    # Bu yerda `baseSymbol` uchun nomni to'g'ri shakllantirish muhim.
-    # Agar API noto'g'ri javob qaytarsa, bu qismni optimallashtirish kerak.
-    # Misol uchun, "LayerZero" uchun "ZRO" ishlatilishi mumkin.
-    base = coin_name.upper().replace(" ", "%20") # Probelni URL uchun kodlash
-    url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
     try:
+        base = coin_name.upper().replace(" ", "%20")
+        url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
         async with session.get(url) as response:
-            response.raise_for_status()
             data = await response.json()
-            # Coincap API da 'exchangeId' kaliti kichik harflarda bo'lishi mumkin
-            # va 'exchangeId' emas, balki 'exchangeId' deb kelishi mumkin.
-            # Shuningdek, 'data' bo'sh bo'lsa, hech qanday ma'lumot yo'qligini anglatadi.
             markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'] in [e.lower() for e in ALLOWED_EXCHANGES]]
             if not markets:
                 return coin_name, None
-            
-            # volumeUsd24Hr ba'zan None yoki bo'sh satr bo'lishi mumkin, shuning uchun floatga o'tkazishdan oldin tekshirish
             best = max(markets, key=lambda x: float(x.get('volumeUsd24Hr') or 0))
-            
             if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
                 return coin_name, None
-            
-            # priceUsd ham mavjudligini tekshirish
-            if not best.get('priceUsd'):
-                return coin_name, None
-
             return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
-    except aiohttp.ClientError as e:
+    except Exception as e:
         print(f"Error fetching {coin_name} from CoinCap: {e}")
         return coin_name, None
-    except Exception as e:
-        print(f"Unexpected error with CoinCap for {coin_name}: {e}")
-        return coin_name, None
-
-# === GATHER DATA ===
 
 async def gather_prices():
     groups = split_coins()
@@ -166,28 +126,23 @@ async def gather_prices():
         tasks = []
         for src, coins in groups.items():
             if src == "coingecko":
-                tasks.extend([fetch_coingecko(s, c) for c in coins]) # extend dan foydalanish
+                tasks.extend([fetch_coingecko(s, c) for c in coins])
             elif src == "coincap":
                 tasks.extend([fetch_coincap(s, c) for c in coins])
-            else: # src == "coinpaprika"
+            else:
                 tasks.extend([fetch_coinpaprika(s, c) for c in coins])
 
-        # asyncio.gather() kutish natijasida barcha vazifalar tugashini ta'minlaydi
-        results = await asyncio.gather(*tasks, return_exceptions=True) # Xatolarni qaytarish uchun
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
-            if isinstance(result, Exception): # Agar vazifa xato qaytargan bo'lsa
-                print(f"Task failed: {result}")
-                continue # Keyingi natijaga o'tish
-
+            if isinstance(result, Exception):
+                continue
             coin, data = result
             if data:
                 src, price, vol = data
                 prices.setdefault(coin.upper(), {})[src] = (price, vol)
 
     return prices
-
-# === DETECT ARBITRAGE ===
 
 def detect_arbitrage(prices):
     ops = []
@@ -210,8 +165,6 @@ def detect_arbitrage(prices):
             })
     return ops
 
-# === ALERT ===
-
 async def send_alert(ctx, ops):
     for o in ops:
         msg = (
@@ -221,54 +174,44 @@ async def send_alert(ctx, ops):
             f"💸 Profit: <b>{o['profit']}%</b>\n"
             f"⏱ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
-        # ADMIN_TELEGRAM_ID ni for-loop ichida iteratsiya qilish
         for admin_id in ADMIN_TELEGRAM_ID:
             await ctx.bot.send_message(chat_id=admin_id, text=msg, parse_mode='HTML')
 
-# === SCHEDULED TASK ===
-
-async def check(ctx):
-    print(f"Checking for arbitrage opportunities at {datetime.utcnow().strftime('%H:%M:%S UTC')}...")
+async def check_arbitrage(context: ContextTypes.DEFAULT_TYPE):
+    print(f"Checking arbitrage at {datetime.utcnow()}")
     prices = await gather_prices()
     ops = detect_arbitrage(prices)
     if ops:
-        await send_alert(ctx, ops)
-    else:
-        print("No arbitrage opportunities found.")
+        await send_alert(context, ops)
 
-# === COMMANDS ===
-
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Foydalanuvchini botning ishlashi haqida xabardor qilish
+# === BOT COMMANDS ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🤖 Arbitrage Bot started! I will send alerts to you.")
-        # check() funksiyasiga ContextTypes ni to'g'ri o'tkazish
-        ctx.job_queue.run_repeating(check, interval=180, first=5, data=ctx)
+        await update.message.reply_text("🤖 Arbitrage Bot ishga tushdi! 3 daqiqada bir tekshiraman.")
+        context.job_queue.run_repeating(
+            check_arbitrage,
+            interval=180,
+            first=10
+        )
     else:
-        await update.message.reply_text("Siz botni ishga tushirish uchun ruxsatga ega emassiz.")
+        await update.message.reply_text("⚠️ Sizga ruxsat yo'q!")
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Bot ishlamoqda")
 
-async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Foydalanuvchi status so'raganda xabar berish
-    await update.message.reply_text("👋 Hello! I'm currently monitoring for arbitrage opportunities. You will be a millionaire! 💸")
-
-async def check_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Bu komanda faqat administratorlar uchun bo'lishi kerak.
+async def manual_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🔍 Manual check initiated...")
-        await check(ctx) # check funksiyasini to'g'ridan-to'g'ri chaqirish
-        await update.message.reply_text("Manual check completed.")
+        await update.message.reply_text("🔍 Qo'lda tekshirish boshlandi...")
+        await check_arbitrage(context)
+        await update.message.reply_text("✅ Tekshirish tugadi")
     else:
-        await update.message.reply_text("Siz qo'lda tekshirishni ishga tushirish uchun ruxsatga ega emassiz.")
+        await update.message.reply_text("⚠️ Sizga ruxsat yo'q!")
 
-
-# === MAIN ===
-
+# === BOTNI ISHGA TUSHIRISH ===
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("check", check_cmd))
-    print("🚀 Bot ready!")
+    app.add_handler(CommandHandler("check", manual_check))
+    print("🚀 Bot ishga tushdi!")
     app.run_polling()
-
