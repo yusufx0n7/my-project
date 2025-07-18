@@ -6,7 +6,7 @@ from datetime import datetime
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-ADMIN_TELEGRAM_ID = (7971306481, 6329050233) # Sizning admin ID(lar)ingiz
+ADMIN_TELEGRAM_ID = (7971306481, 6329050233)  # Sizning admin ID(lar)ingiz
 
 ALLOWED_EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
@@ -54,12 +54,9 @@ COIN_NAMES = [
     "Energi", "Build", "DecideAI", "5ire", "Slash Vision Labs", "Star Protocol"
 ]
 
-VOLUME_THRESHOLD = 5000
-
 def split_coins():
-    # Coincap olib tashlanganligi sababli, tangalar endi 2 ta guruhga bo'linadi
     n = len(COIN_NAMES)
-    c = n // 2 # Teng ikkiga bo'lish
+    c = n // 2
     return {
         "coingecko": COIN_NAMES[:c],
         "coinpaprika": COIN_NAMES[c:]
@@ -67,62 +64,37 @@ def split_coins():
 
 async def fetch_coingecko(session, coin_name):
     try:
-        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'","").replace("(", "").replace(")", "").replace(",","")
+        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'", "").replace("(", "").replace(")", "").replace(",", "")
         url = f"https://api.coingecko.com/api/v3/coins/{_id}/tickers"
         async with session.get(url) as response:
             data = await response.json()
             if not data or "tickers" not in data:
                 return coin_name, None
-
             tickers = [t for t in data.get("tickers", []) if t['market']['name'] in ALLOWED_EXCHANGES]
             if not tickers:
                 return coin_name, None
             best = max(tickers, key=lambda x: x['volume'])
-            if best['converted_volume']['usd'] < VOLUME_THRESHOLD:
-                return coin_name, None
-            return coin_name, ("coingecko", float(best['converted_last']['usd']), float(best['converted_volume']['usd']))
+            return coin_name, ("coingecko", float(best['converted_last']['usd']))
     except Exception as e:
         print(f"Error fetching {coin_name} from CoinGecko: {e}")
         return coin_name, None
 
 async def fetch_coinpaprika(session, coin_name):
     try:
-        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'","").replace("(", "").replace(")", "").replace(",","")
-        # Coinpaprika uchun ID formatini tekshirish kerak
+        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'", "").replace("(", "").replace(")", "").replace(",", "")
         url = f"https://api.coinpaprika.com/v1/tickers/{_id}"
         async with session.get(url) as response:
             data = await response.json()
-            if "error" in data or not data: # Coinpaprika ba'zan xato obyektini qaytaradi
+            if "error" in data or not data:
                 return coin_name, None
-
             markets = [m for m in data.get("markets", []) if m['exchange_name'] in ALLOWED_EXCHANGES]
             if not markets:
                 return coin_name, None
             best = max(markets, key=lambda x: x['volume_usd'])
-            if best['volume_usd'] < VOLUME_THRESHOLD:
-                return coin_name, None
-            return coin_name, ("coinpaprika", float(best['price']), float(best['volume_usd']))
+            return coin_name, ("coinpaprika", float(best['price']))
     except Exception as e:
         print(f"Error fetching {coin_name} from Coinpaprika: {e}")
         return coin_name, None
-
-# Coincap endi yo'q
-# async def fetch_coincap(session, coin_name):
-#     try:
-#         base = coin_name.upper().replace(" ", "%20")
-#         url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
-#         async with session.get(url) as response:
-#             data = await response.json()
-#             markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'].lower() in [e.lower() for e in ALLOWED_EXCHANGES]]
-#             if not markets:
-#                 return coin_name, None
-#             best = max(markets, key=lambda x: float(x.get('volumeUsd24Hr') or 0))
-#             if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
-#                 return coin_name, None
-#             return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
-#     except Exception as e:
-#         print(f"Error fetching {coin_name} from CoinCap: {e}")
-#         return coin_name, None
 
 async def gather_prices():
     groups = split_coins()
@@ -132,25 +104,25 @@ async def gather_prices():
         for src, coins in groups.items():
             if src == "coingecko":
                 tasks.extend([fetch_coingecko(s, c) for c in coins])
-            elif src == "coinpaprika": # Faqat coinpaprika qoldi
+            elif src == "coinpaprika":
                 tasks.extend([fetch_coinpaprika(s, c) for c in coins])
         results = await asyncio.gather(*tasks)
         for result in results:
             coin, data = result
             if data:
-                src, price, vol = data
-                prices.setdefault(coin.upper(), {})[src] = (price, vol)
+                src, price = data
+                prices.setdefault(coin.upper(), {})[src] = price
     return prices
 
 def detect_arbitrage(prices):
     ops = []
     for coin, data in prices.items():
-        valid = {s: p for s, (p, v) in data.items()}
-        if len(valid) < 2: # Endi faqat 2 ta manba bor, shuning uchun hali ham kamida 2 ta bo'lishi kerak
+        if len(data) < 2:
             continue
-        min_src = min(valid, key=valid.get)
-        max_src = max(valid, key=valid.get)
-        min_p, max_p = valid[min_src], valid[max_src]
+        min_src = min(data, key=data.get)
+        max_src = max(data, key=data.get)
+        min_p = data[min_src]
+        max_p = data[max_src]
         profit = (max_p - min_p) / min_p * 100
         if 3 <= profit <= 15:
             ops.append({
