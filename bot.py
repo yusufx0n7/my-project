@@ -6,7 +6,7 @@ from datetime import datetime
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '7780864447:AAESpcIqmzNkN1CiyLM1WfRkzPMWPeq7dzU'
-ADMIN_TELEGRAM_ID = (7971306481, 6329050233)
+ADMIN_TELEGRAM_ID = (7971306481, 6329050233) # Sizning admin ID(lar)ingiz
 
 ALLOWED_EXCHANGES = {
     'Binance', 'CoinEx', 'AscendEX', 'HTX', 'Bitget', 'Poloniex', 'BitMart',
@@ -57,20 +57,23 @@ COIN_NAMES = [
 VOLUME_THRESHOLD = 5000
 
 def split_coins():
+    # Coincap olib tashlanganligi sababli, tangalar endi 2 ta guruhga bo'linadi
     n = len(COIN_NAMES)
-    c = n // 3
+    c = n // 2 # Teng ikkiga bo'lish
     return {
         "coingecko": COIN_NAMES[:c],
-        "coincap": COIN_NAMES[c:2*c],
-        "coinpaprika": COIN_NAMES[2*c:]
+        "coinpaprika": COIN_NAMES[c:]
     }
 
 async def fetch_coingecko(session, coin_name):
     try:
-        _id = coin_name.lower().replace(" ", "-").replace(".", "")
+        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'","").replace("(", "").replace(")", "").replace(",","")
         url = f"https://api.coingecko.com/api/v3/coins/{_id}/tickers"
         async with session.get(url) as response:
             data = await response.json()
+            if not data or "tickers" not in data:
+                return coin_name, None
+
             tickers = [t for t in data.get("tickers", []) if t['market']['name'] in ALLOWED_EXCHANGES]
             if not tickers:
                 return coin_name, None
@@ -84,10 +87,14 @@ async def fetch_coingecko(session, coin_name):
 
 async def fetch_coinpaprika(session, coin_name):
     try:
-        _id = coin_name.lower().replace(" ", "-").replace(".", "")
+        _id = coin_name.lower().replace(" ", "-").replace(".", "").replace(":", "").replace("'","").replace("(", "").replace(")", "").replace(",","")
+        # Coinpaprika uchun ID formatini tekshirish kerak
         url = f"https://api.coinpaprika.com/v1/tickers/{_id}"
         async with session.get(url) as response:
             data = await response.json()
+            if "error" in data or not data: # Coinpaprika ba'zan xato obyektini qaytaradi
+                return coin_name, None
+
             markets = [m for m in data.get("markets", []) if m['exchange_name'] in ALLOWED_EXCHANGES]
             if not markets:
                 return coin_name, None
@@ -99,22 +106,23 @@ async def fetch_coinpaprika(session, coin_name):
         print(f"Error fetching {coin_name} from Coinpaprika: {e}")
         return coin_name, None
 
-async def fetch_coincap(session, coin_name):
-    try:
-        base = coin_name.upper().replace(" ", "%20")
-        url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
-        async with session.get(url) as response:
-            data = await response.json()
-            markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'].lower() in [e.lower() for e in ALLOWED_EXCHANGES]]
-            if not markets:
-                return coin_name, None
-            best = max(markets, key=lambda x: float(x.get('volumeUsd24Hr') or 0))
-            if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
-                return coin_name, None
-            return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
-    except Exception as e:
-        print(f"Error fetching {coin_name} from CoinCap: {e}")
-        return coin_name, None
+# Coincap endi yo'q
+# async def fetch_coincap(session, coin_name):
+#     try:
+#         base = coin_name.upper().replace(" ", "%20")
+#         url = f"https://api.coincap.io/v2/markets?baseSymbol={base}"
+#         async with session.get(url) as response:
+#             data = await response.json()
+#             markets = [m for m in data.get("data", []) if m.get('exchangeId') and m['exchangeId'].lower() in [e.lower() for e in ALLOWED_EXCHANGES]]
+#             if not markets:
+#                 return coin_name, None
+#             best = max(markets, key=lambda x: float(x.get('volumeUsd24Hr') or 0))
+#             if float(best.get('volumeUsd24Hr') or 0) < VOLUME_THRESHOLD:
+#                 return coin_name, None
+#             return coin_name, ("coincap", float(best['priceUsd']), float(best['volumeUsd24Hr']))
+#     except Exception as e:
+#         print(f"Error fetching {coin_name} from CoinCap: {e}")
+#         return coin_name, None
 
 async def gather_prices():
     groups = split_coins()
@@ -124,9 +132,7 @@ async def gather_prices():
         for src, coins in groups.items():
             if src == "coingecko":
                 tasks.extend([fetch_coingecko(s, c) for c in coins])
-            elif src == "coincap":
-                tasks.extend([fetch_coincap(s, c) for c in coins])
-            else:
+            elif src == "coinpaprika": # Faqat coinpaprika qoldi
                 tasks.extend([fetch_coinpaprika(s, c) for c in coins])
         results = await asyncio.gather(*tasks)
         for result in results:
@@ -140,7 +146,7 @@ def detect_arbitrage(prices):
     ops = []
     for coin, data in prices.items():
         valid = {s: p for s, (p, v) in data.items()}
-        if len(valid) < 2:
+        if len(valid) < 2: # Endi faqat 2 ta manba bor, shuning uchun hali ham kamida 2 ta bo'lishi kerak
             continue
         min_src = min(valid, key=valid.get)
         max_src = max(valid, key=valid.get)
@@ -160,47 +166,47 @@ def detect_arbitrage(prices):
 async def send_alert(ctx, ops):
     for o in ops:
         msg = (
-            f"🚀 <b>Arbitrage Alert!</b>\n"
-            f"🪙 {o['coin']}: Buy @ {o['buy']} (${o['bprice']:.4f}), "
-            f"Sell @ {o['sell']} (${o['sprice']:.4f})\n"
-            f"💸 Profit: <b>{o['profit']}%</b>\n"
+            f"🚀 <b>Arbitraj Ogohlantirishi!</b>\n"
+            f"🪙 {o['coin']}: {o['buy']} dan sotib oling (${o['bprice']:.4f}), "
+            f"{o['sell']} da soting (${o['sprice']:.4f})\n"
+            f"💸 Foyda: <b>{o['profit']}%</b>\n"
             f"⏱ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
         )
         for admin_id in ADMIN_TELEGRAM_ID:
             await ctx.bot.send_message(chat_id=admin_id, text=msg, parse_mode='HTML')
 
 async def check_arbitrage(context: ContextTypes.DEFAULT_TYPE):
-    print(f"Checking for arbitrage at {datetime.utcnow()}")
+    print(f"Arbitraj {datetime.utcnow()} da tekshirilmoqda")
     prices = await gather_prices()
     ops = detect_arbitrage(prices)
     if ops:
         await send_alert(context, ops)
     else:
-        print("No arbitrage opportunities found")
+        print("Arbitraj imkoniyatlari topilmadi")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🤖 Arbitrage Bot started! Checking every 3 minutes.")
+        await update.message.reply_text("🤖 Arbitraj Boti ishga tushirildi! Har 3 daqiqada tekshiriladi.")
         context.job_queue.run_repeating(check_arbitrage, interval=180, first=5)
     else:
-        await update.message.reply_text("⚠️ You don't have permission to start this bot!")
+        await update.message.reply_text("⚠️ Sizda bu botni ishga tushirishga ruxsat yo'q!")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Bot is running and monitoring for arbitrage opportunities")
+    await update.message.reply_text("✅ Bot ishlamoqda va arbitraj imkoniyatlarini kuzatmoqda")
 
 async def manual_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id in ADMIN_TELEGRAM_ID:
-        await update.message.reply_text("🔍 Starting manual check...")
+        await update.message.reply_text("🔍 Qo'lda tekshirish boshlandi...")
         await check_arbitrage(context)
-        await update.message.reply_text("✅ Manual check completed")
+        await update.message.reply_text("✅ Qo'lda tekshirish yakunlandi")
     else:
-        await update.message.reply_text("⚠️ You don't have permission to run manual checks!")
+        await update.message.reply_text("⚠️ Sizda qo'lda tekshirishni bajarishga ruxsat yo'q!")
 
 if __name__ == '__main__':
-    print("Starting bot...")
+    print("Bot ishga tushirilmoqda...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("check", manual_check))
-    print("🚀 Bot is ready and running!")
+    print("🚀 Bot tayyor va ishlamoqda!")
     app.run_polling()
